@@ -13,6 +13,7 @@
   <script src='https://cdn.tailwindcss.com'></script>
   <link href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css' rel='stylesheet'>
   <script>
+    // Config default jika belum ada koneksi ke server
     window.APP_CONFIG = { 
         appName: 'SERASI', 
         schoolName: 'Sistem Rekap Nilai', 
@@ -44,15 +45,13 @@
     // ========================================================================
     // KONFIGURASI API (WAJIB DIISI)
     // ========================================================================
-    // Ganti nilai di bawah ini dengan URL Web App dari Google Apps Script Anda
-    const GAS_API_URL = "https://script.google.com/macros/s/AKfycbz23DvzgHx6oNGe0RNi-OqYONg9F5Rpi9WacXgYmR39RaxjhWpx9jvWCgaOH6Lpb0ftGQ/exec";
+    const GAS_API_URL = "https://script.google.com/macros/s/AKfycbwyURTuu683S8G0xkpGiu6W3F1JwvkwlSGLNeuqxohgrJhU6Gq9NDwl1hWlkupfxw_LOg/exec";
 
     // Fungsi Fetch API Pengganti google.script.run
     const callApi = async (action, data = {}) => {
         try {
             const response = await fetch(GAS_API_URL, {
                 method: 'POST',
-                // Trik Bypass Preflight CORS (Jangan diganti)
                 headers: { 'Content-Type': 'text/plain;charset=utf-8' },
                 body: JSON.stringify({ action, data }),
                 redirect: 'follow'
@@ -86,7 +85,8 @@
     };
 
     function App() {
-      const [appConfig] = useState(window.APP_CONFIG || {});
+      // PERBAIKAN 1: Jadikan appConfig sebagai State Dinamis
+      const [appConfig, setAppConfig] = useState(window.APP_CONFIG || {});
       const [isDark, setIsDark] = useState(false);
       const [auth, setAuth] = useState(null);
       
@@ -239,6 +239,9 @@
           }
           
           if(res.success && !res.error) {
+            // PERBAIKAN 1 Lanjutan: Timpa App Config dari API Server
+            if(res.appConfig) setAppConfig(res.appConfig);
+
             setHeaders(res.headers); setDbData(res.data); setIncDbData(res.incData || []); 
             setDrafts(res.drafts || []); setRombels(res.rombels); setLockStatus(res.lockStatus); setMapelConfig(res.mapelConfig || []);
             if(res.akunList) setAkunList(res.akunList);
@@ -361,6 +364,8 @@
                fetchDashboardData(loginUser, loginPass, false); 
             } else {
                if (auth.role === 'Wali Kelas' && !waliEdits.includes(key)) setWaliEdits(prev => [...prev, key]);
+               
+               // Update Master Data state lokal
                setDbData(prev => prev.map(row => {
                   if (row.NIS === nis) {
                      const updatedRow = {...row, [colName]: newVal, 'Rerata Akhir SKL': res.newRerataSKL, 'Rerata Akhir Ijazah': res.newRerataIjazah, 'Status Data': res.newStatusData};
@@ -368,6 +373,11 @@
                   }
                   return row;
                }));
+
+               // PERBAIKAN 2: Filter/Hapus row dari Data Incomplete jika status sudah Lengkap
+               if (res.newStatusData === 'Lengkap') {
+                   setIncDbData(prev => prev.filter(item => item.NIS !== nis));
+               }
             }
           } else { setMessage({ type: 'error', text: 'Gagal: ' + res.message }); fetchDashboardData(loginUser, loginPass, false); }
         });
@@ -489,12 +499,13 @@
         <div className="flex flex-col sm:flex-row items-center justify-between px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 shrink-0">
           <div className="flex items-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3 sm:mb-0">
             Tampil per
+            {/* PERBAIKAN 3: Option Background Dark Mode Support */}
             <select value={itemsPerPage} onChange={(e) => setItemsPerPage(Number(e.target.value))} className="mx-2 px-2 py-1 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm cursor-pointer">
-              <option value={10}>10</option>
-              <option value={15}>15</option>
-              <option value={25}>25</option>
-              <option value={50}>50</option>
-              <option value={100}>100</option>
+              <option value={10} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">10</option>
+              <option value={15} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">15</option>
+              <option value={25} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">25</option>
+              <option value={50} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">50</option>
+              <option value={100} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">100</option>
             </select>
             baris data (Total {filteredData.length})
           </div>
@@ -596,12 +607,13 @@
                         <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Password <span className="text-red-500">*</span></label><input type="text" required value={accForm.password} onChange={e=>setAccForm({...accForm, password: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white" /></div>
                         <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Nama Pengguna <span className="text-red-500">*</span></label><input type="text" required value={accForm.name} onChange={e=>setAccForm({...accForm, name: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white" /></div>
                         <div className="grid grid-cols-2 gap-4">
-                           <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Role <span className="text-red-500">*</span></label><select value={accForm.role} onChange={e=>setAccForm({...accForm, role: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white"><option value="Siswa">Siswa</option><option value="Wali Kelas">Wali Kelas</option><option value="Admin">Admin</option></select></div>
+                           {/* PERBAIKAN 3: Option Background Dark Mode Support */}
+                           <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Role <span className="text-red-500">*</span></label><select value={accForm.role} onChange={e=>setAccForm({...accForm, role: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white"><option value="Siswa" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Siswa</option><option value="Wali Kelas" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Wali Kelas</option><option value="Admin" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Admin</option></select></div>
                            <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Rombel Akses</label><input type="text" value={accForm.rombel} onChange={e=>setAccForm({...accForm, rombel: e.target.value})} placeholder="Misal: 9A / Semua" className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white" /></div>
                         </div>
                         <div className="grid grid-cols-2 gap-4">
                            <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Masa Aktif</label><input type="date" value={accForm.expDate} onChange={e=>setAccForm({...accForm, expDate: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white" /></div>
-                           <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Status</label><select value={accForm.status} onChange={e=>setAccForm({...accForm, status: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white"><option value="Active">Active</option><option value="Inactive">Inactive</option></select></div>
+                           <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Status</label><select value={accForm.status} onChange={e=>setAccForm({...accForm, status: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white"><option value="Active" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Active</option><option value="Inactive" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Inactive</option></select></div>
                         </div>
                      </form>
                      <div className="p-5 border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 flex justify-end gap-3 shrink-0">
@@ -625,8 +637,8 @@
                         <div className='flex items-center bg-slate-50 dark:bg-slate-900 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 shrink-0 w-full sm:w-auto shadow-sm'>
                           <i className="fas fa-users text-slate-400 ml-2 mr-1"></i>
                           <select className='bg-transparent font-bold px-2 py-1 focus:outline-none text-sm text-slate-800 dark:text-slate-200 cursor-pointer w-full sm:w-48' value={selectedRombel} onChange={e => setSelectedRombel(e.target.value)} disabled={auth.role === 'Wali Kelas' && auth.rombelAkses !== 'Semua'}>
-                            {auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua">Semua Rombel</option> : null}
-                            {rombels.map(r => <option key={r} value={r}>Kelas {r}</option>)}
+                            {auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Semua Rombel</option> : null}
+                            {rombels.map(r => <option key={r} value={r} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Kelas {r}</option>)}
                           </select>
                         </div>
                      </div>
@@ -780,7 +792,10 @@
                         </div>
                         {auth.role !== 'Siswa' && (
                            <div className='flex items-center bg-slate-50 dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-700 w-full sm:w-auto shrink-0'>
-                              <select className='bg-transparent font-bold px-3 py-1.5 w-full sm:w-40 focus:outline-none text-slate-800 dark:text-slate-200 text-sm sm:text-base' value={selectedRombel} onChange={e => setSelectedRombel(e.target.value)} disabled={auth.role === 'Wali Kelas' && auth.rombelAkses !== 'Semua'}>{auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua">Semua Rombel</option> : null}{rombels.map(r => <option key={r} value={r} className="dark:bg-slate-800">Kelas {r}</option>)}</select>
+                              <select className='bg-transparent font-bold px-3 py-1.5 w-full sm:w-40 focus:outline-none text-slate-800 dark:text-slate-200 text-sm sm:text-base' value={selectedRombel} onChange={e => setSelectedRombel(e.target.value)} disabled={auth.role === 'Wali Kelas' && auth.rombelAkses !== 'Semua'}>
+                                {auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Semua Rombel</option> : null}
+                                {rombels.map(r => <option key={r} value={r} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Kelas {r}</option>)}
+                              </select>
                            </div>
                         )}
                      </div>
@@ -837,15 +852,15 @@
                            <div className='flex items-center bg-slate-50 dark:bg-slate-900 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 shrink-0'>
                              <i className="fas fa-users text-slate-400 ml-2 mr-1"></i>
                              <select className='bg-transparent font-bold px-2 py-1 focus:outline-none text-sm text-slate-800 dark:text-slate-200 cursor-pointer w-full' value={selectedRombel} onChange={e => setSelectedRombel(e.target.value)} disabled={auth.role === 'Wali Kelas' && auth.rombelAkses !== 'Semua'}>
-                               {auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua">Semua Rombel</option> : null}
-                               {rombels.map(r => <option key={r} value={r}>Kelas {r}</option>)}
+                               {auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Semua Rombel</option> : null}
+                               {rombels.map(r => <option key={r} value={r} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Kelas {r}</option>)}
                              </select>
                            </div>
 
                            <div className='flex items-center bg-white dark:bg-slate-800 p-1.5 rounded-xl border border-blue-300 dark:border-blue-700 shadow-sm shrink-0 w-full sm:w-72'>
                              <i className="fas fa-user-graduate text-blue-500 ml-2 mr-2"></i>
                              <select className='bg-transparent font-bold px-1 py-1 w-full focus:outline-none text-sm text-slate-800 dark:text-slate-200 cursor-pointer truncate' value={selectedStudentNIS} onChange={e => setSelectedStudentNIS(e.target.value)}>
-                               {studentsInRombel.map(s => <option key={s.NIS} value={s.NIS}>{s['Nama Lengkap']} ({s.NIS})</option>)}
+                               {studentsInRombel.map(s => <option key={s.NIS} value={s.NIS} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">{s['Nama Lengkap']} ({s.NIS})</option>)}
                              </select>
                            </div>
                          </div>
@@ -991,7 +1006,10 @@
                         </div>
                         <div className='flex items-center bg-slate-50 dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-700 w-full sm:w-auto shrink-0'>
                           <div className="bg-white dark:bg-slate-800 p-1.5 px-3 rounded-lg text-slate-400 hidden sm:block shadow-sm"><i className='fas fa-filter'></i></div>
-                          <select className='bg-transparent font-bold px-3 py-1.5 w-full sm:w-40 focus:outline-none text-slate-800 dark:text-slate-200 text-sm sm:text-base' value={selectedRombel} onChange={e => setSelectedRombel(e.target.value)} disabled={auth.role === 'Wali Kelas' && auth.rombelAkses !== 'Semua'}>{auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua">Semua Rombel</option> : null}{rombels.map(r => <option key={r} value={r} className="dark:bg-slate-800">Kelas {r}</option>)}</select>
+                          <select className='bg-transparent font-bold px-3 py-1.5 w-full sm:w-40 focus:outline-none text-slate-800 dark:text-slate-200 text-sm sm:text-base' value={selectedRombel} onChange={e => setSelectedRombel(e.target.value)} disabled={auth.role === 'Wali Kelas' && auth.rombelAkses !== 'Semua'}>
+                            {auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Semua Rombel</option> : null}
+                            {rombels.map(r => <option key={r} value={r} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Kelas {r}</option>)}
+                          </select>
                         </div>
                       </div>
                     </div>
@@ -1150,8 +1168,8 @@
                            <div className='flex items-center bg-slate-50 dark:bg-slate-900 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm'>
                              <i className="fas fa-filter text-slate-400 ml-2 mr-1"></i>
                              <select className='bg-transparent font-bold px-2 py-1 focus:outline-none text-sm text-slate-800 dark:text-slate-200 cursor-pointer min-w-[140px]' value={selectedRombel} onChange={e => setSelectedRombel(e.target.value)} disabled={auth.role === 'Wali Kelas' && auth.rombelAkses !== 'Semua'}>
-                               {auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua">Semua Rombel</option> : null}
-                               {rombels.map(r => <option key={r} value={r}>Kelas {r}</option>)}
+                               {auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Semua Rombel</option> : null}
+                               {rombels.map(r => <option key={r} value={r} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-white">Kelas {r}</option>)}
                              </select>
                            </div>
                            <div className="relative w-full sm:w-64">
