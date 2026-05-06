@@ -1,0 +1,1204 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SERASI - Sistem Rekap Nilai Ijazah</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src='https://unpkg.com/react@17/umd/react.production.min.js'></script>
+  <script src='https://unpkg.com/react-dom@17/umd/react-dom.production.min.js'></script>
+  <script src='https://unpkg.com/@babel/standalone/babel.min.js'></script>
+  <script src='https://cdn.tailwindcss.com'></script>
+  <link href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css' rel='stylesheet'>
+  <script>
+    // Konfigurasi Aplikasi (Dulu dari GAS, sekarang statis di frontend)
+    window.APP_CONFIG = { 
+        appName: 'SERASI', 
+        schoolName: 'Sistem Rekap Nilai', 
+        npsn: '-', 
+        logoUrl: '' 
+    };
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: { fontFamily: { sans: ['Nunito', 'sans-serif'] } } }
+    }
+  </script>
+  <style>
+    ::-webkit-scrollbar { height: 8px; width: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    .dark ::-webkit-scrollbar-thumb { background: #475569; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    .table-container { min-height: 400px; }
+    .checkbox-custom:checked { background-color: #8b5cf6; border-color: #8b5cf6; }
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  </style>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 transition-colors duration-300 antialiased overflow-hidden">
+  <div id='app'></div>
+  <script type='text/babel'>
+    const { useState, useEffect } = React;
+
+    // ========================================================================
+    // KONFIGURASI API (WAJIB DIISI)
+    // ========================================================================
+    const GAS_API_URL = "MASUKKAN_URL_WEB_APP_GAS_ANDA_DISINI";
+
+    // Fungsi Fetch API Pengganti google.script.run
+    const callApi = async (action, data = {}) => {
+        try {
+            const response = await fetch(GAS_API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({ action, data }),
+                redirect: 'follow'
+            });
+            const result = await response.json();
+            if (result.error && !result.success) throw new Error(result.error || result.message);
+            return result;
+        } catch (error) {
+            console.error("API Error:", error);
+            throw new Error(error.message || "Koneksi ke server terputus.");
+        }
+    };
+
+    const EditableCell = ({ value, onSave, loadingStatus, isLocked, isPending, pendingValue, isEditedByWali }) => {
+      const [editing, setEditing] = useState(false);
+      const [val, setVal] = useState(value);
+      const handleBlur = () => { setEditing(false); if (String(val).trim() !== String(value).trim()) onSave(val); };
+      
+      if (loadingStatus) return <div className="text-slate-400 text-sm flex justify-center"><i className="fas fa-spinner fa-spin"></i></div>;
+      if (isPending) return <div className="px-2 py-1.5 text-center text-sm font-bold text-amber-600 bg-amber-50 dark:bg-amber-900/30 rounded cursor-not-allowed" title="Menunggu Validasi Wali Kelas"><i className="fas fa-hourglass-half text-xs mr-1"></i>{pendingValue || '-'}</div>;
+      if (isLocked) return <div className="px-2 py-1.5 text-center text-sm font-medium text-slate-500 bg-slate-100 dark:bg-slate-700/50 rounded cursor-not-allowed" title="Dikunci atau Diverifikasi"><i className="fas fa-lock text-xs mr-1 opacity-50"></i>{value || '-'}</div>;
+      
+      return editing ? (
+        <input autoFocus type="number" step="any" className="w-16 px-2 py-1.5 border-2 border-blue-500 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded text-center text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400 shadow-sm transition-all" value={val} onChange={e => setVal(e.target.value)} onBlur={handleBlur} onKeyDown={e => e.key === 'Enter' && handleBlur()} />
+      ) : (
+        <div className="cursor-pointer hover:bg-yellow-100 dark:hover:bg-blue-900/40 px-2 py-1.5 rounded text-center text-sm font-bold text-slate-700 dark:text-slate-300 transition-colors relative" onClick={() => setEditing(true)} title="Klik untuk mengubah nilai">
+          {value !== '' ? value : '-'}
+          {isEditedByWali && <span className="absolute -top-1 -right-1 text-blue-500 bg-white dark:bg-slate-800 rounded-full w-4 h-4 flex items-center justify-center shadow-sm border border-blue-100 dark:border-blue-800" title="Data ini diedit secara mandiri oleh Wali Kelas"><i className="fas fa-user-edit text-[8px]"></i></span>}
+        </div>
+      );
+    };
+
+    function App() {
+      const [appConfig] = useState(window.APP_CONFIG || {});
+      const [isDark, setIsDark] = useState(false);
+      const [auth, setAuth] = useState(null);
+      
+      const [loginUser, setLoginUser] = useState(localStorage.getItem('serasi_user') || '');
+      const [loginPass, setLoginPass] = useState(localStorage.getItem('serasi_pass') || '');
+      const [sessionToken, setSessionToken] = useState(localStorage.getItem('serasi_token') || '');
+      const [lastActivity, setLastActivity] = useState(Date.now());
+      
+      const [tab, setTab] = useState('dashboard'); 
+      const [loading, setLoading] = useState(true);
+      const [message, setMessage] = useState(null);
+      
+      const [dbData, setDbData] = useState([]);
+      const [incDbData, setIncDbData] = useState([]);
+      const [drafts, setDrafts] = useState([]);
+      const [akunList, setAkunList] = useState([]);
+      const [headers, setHeaders] = useState([]);
+      const [rombels, setRombels] = useState([]);
+      const [lockStatus, setLockStatus] = useState({});
+      const [mapelConfig, setMapelConfig] = useState([]); 
+      const [waliEdits, setWaliEdits] = useState([]);
+      
+      const [selectedRombel, setSelectedRombel] = useState('Semua');
+      const [selectedSemester, setSelectedSemester] = useState('1');
+      const [searchTerm, setSearchTerm] = useState('');
+      const [searchTermAkun, setSearchTermAkun] = useState('');
+      const [cellLoading, setCellLoading] = useState({});
+      const [calcMode, setCalcMode] = useState(5);
+      const [selectedStudentNIS, setSelectedStudentNIS] = useState('');
+
+      const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 1024);
+      const [showAccModal, setShowAccModal] = useState(false);
+      const [accForm, setAccForm] = useState({ username: '', password: '', name: '', role: 'Siswa', rombel: '', expDate: '', status: 'Active', isEdit: false, originalUsername: '' });
+
+      const [currentPage, setCurrentPage] = useState(1);
+      const [itemsPerPage, setItemsPerPage] = useState(15);
+
+      useEffect(() => {
+        if (!auth || auth.status === 'unauthorized') return;
+        const updateActivity = () => setLastActivity(Date.now());
+        window.addEventListener('mousemove', updateActivity);
+        window.addEventListener('keydown', updateActivity);
+        window.addEventListener('click', updateActivity);
+        window.addEventListener('touchstart', updateActivity);
+        return () => {
+          window.removeEventListener('mousemove', updateActivity); window.removeEventListener('keydown', updateActivity);
+          window.removeEventListener('click', updateActivity); window.removeEventListener('touchstart', updateActivity);
+        };
+      }, [auth]);
+
+      useEffect(() => {
+        if (!auth || auth.status === 'unauthorized' || !sessionToken) return;
+        const interval = setInterval(() => {
+           const inactiveMins = (Date.now() - lastActivity) / 60000;
+           if (inactiveMins >= 15) {
+               handleLogout(true);
+           } else if (inactiveMins < 14) { 
+               callApi('pingSession', { username: loginUser, sessionToken })
+               .then(res => { if (!res.success) handleLogout(false, res.message, true); })
+               .catch(e => console.log(e));
+           }
+        }, 60000);
+        return () => clearInterval(interval);
+      }, [auth, sessionToken, lastActivity, loginUser]);
+
+      useEffect(() => {
+        const savedTheme = localStorage.getItem('serasi_theme');
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (savedTheme === 'dark' || (!savedTheme && prefersDark)) { setIsDark(true); document.documentElement.classList.add('dark'); }
+        const handleResize = () => { if (window.innerWidth >= 1024) setIsSidebarOpen(true); else setIsSidebarOpen(false); };
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+      }, []);
+
+      useEffect(() => { setCurrentPage(1); }, [searchTerm, selectedRombel, selectedSemester, itemsPerPage]);
+
+      useEffect(() => {
+        if (auth && auth.role === 'Siswa') {
+           setSelectedStudentNIS(auth.username);
+        } else if (tab === 'semester' && auth && auth.role !== 'Siswa') {
+           const studentsInRombel = dbData.filter(row => selectedRombel === 'Semua' ? true : row.Rombel === selectedRombel);
+           if (studentsInRombel.length > 0 && (!selectedStudentNIS || !studentsInRombel.find(s => s.NIS === selectedStudentNIS))) {
+              setSelectedStudentNIS(studentsInRombel[0].NIS);
+           }
+        }
+      }, [dbData, selectedRombel, tab, auth]);
+
+      const toggleTheme = () => {
+        if (isDark) { document.documentElement.classList.remove('dark'); localStorage.setItem('serasi_theme', 'light'); setIsDark(false); } 
+        else { document.documentElement.classList.add('dark'); localStorage.setItem('serasi_theme', 'dark'); setIsDark(true); }
+      };
+
+      useEffect(() => { if (loginUser && loginPass) fetchDashboardData(loginUser, loginPass, false); else setLoading(false); }, []);
+
+      const handleLogin = (e) => { 
+         e.preventDefault(); 
+         if (!loginUser.trim() || !loginPass.trim()) return; 
+         setLoading(true); setMessage(null); 
+         fetchDashboardData(loginUser.trim(), loginPass.trim(), true); 
+      };
+
+      const handleLogout = (isAuto = false, customMsg = null, skipBackend = false) => { 
+         if (loginUser && !skipBackend) {
+             callApi('processLogout', { username: loginUser, sessionToken }).catch(e => console.log(e));
+         }
+         localStorage.removeItem('serasi_user'); localStorage.removeItem('serasi_pass'); localStorage.removeItem('serasi_token');
+         setLoginUser(''); setLoginPass(''); setSessionToken(''); setAuth(null); setDbData([]); setIncDbData([]); setDrafts([]); setAkunList([]); setWaliEdits([]);
+         if (customMsg || isAuto) {
+             const isError = customMsg && customMsg.toLowerCase().includes('diambil alih');
+             setMessage({ type: isError ? 'error' : 'info', text: customMsg || 'Sesi berakhir otomatis karena 15 menit tidak ada aktivitas.' });
+         }
+      };
+
+      const fetchDashboardData = (user, pass, isFreshLogin = false) => {
+        setLoading(true);
+        const currentToken = isFreshLogin ? '' : (localStorage.getItem('serasi_token') || '');
+        
+        callApi('getDashboardData', { user, pass, isFreshLogin, currentToken })
+        .then(res => {
+          setLoading(false);
+          if (res.auth && res.auth.status === 'authorized') {
+             setAuth(res.auth); 
+             localStorage.setItem('serasi_user', user);
+             localStorage.setItem('serasi_pass', res.auth.newPass ? res.auth.newPass : pass);
+             if (res.auth.sessionToken) {
+                 setSessionToken(res.auth.sessionToken);
+                 localStorage.setItem('serasi_token', res.auth.sessionToken);
+             }
+             if (res.error) {
+                 if (!res.auth.warningMsg) setMessage({ type: 'info', text: res.error });
+                 if (res.auth.role === 'Admin') setTab('sync');
+             } else {
+                 if (isFreshLogin) setTab(res.auth.role === 'Siswa' ? 'semester' : 'dashboard');
+             }
+          } else {
+             setAuth({ status: 'unauthorized' }); 
+             localStorage.removeItem('serasi_user'); localStorage.removeItem('serasi_pass'); localStorage.removeItem('serasi_token');
+             setMessage({ type: 'error', text: res.error || 'Akses Ditolak.' }); 
+             return;
+          }
+          
+          if(res.success && !res.error) {
+            setHeaders(res.headers); setDbData(res.data); setIncDbData(res.incData || []); 
+            setDrafts(res.drafts || []); setRombels(res.rombels); setLockStatus(res.lockStatus); setMapelConfig(res.mapelConfig || []);
+            if(res.akunList) setAkunList(res.akunList);
+            if(res.waliEdits) setWaliEdits(res.waliEdits);
+            
+            if(res.auth.role === 'Wali Kelas' && res.auth.rombelAkses !== 'Semua') setSelectedRombel(res.auth.rombelAkses);
+            const availableSems = [1,2,3,4,5,6].filter(sem => res.headers.some(h => h.startsWith('Sem' + sem + '_')));
+            if(availableSems.length > 0) setSelectedSemester(String(availableSems[0]));
+          }
+        })
+        .catch(err => {
+           setLoading(false);
+           setMessage({ type: 'error', text: 'Gagal menghubungi server: ' + err.message });
+        });
+      };
+
+      const handleVerification = (nis, action) => {
+          setLoading(true);
+          callApi('updateVerification', { nis, action, loginUser, sessionToken })
+          .then(res => {
+              setMessage({ type: res.success ? 'success' : 'error', text: res.message });
+              fetchDashboardData(loginUser, loginPass, false);
+          })
+          .catch(err => { setLoading(false); setMessage({ type: 'error', text: err.message }); });
+      };
+
+      const handleGenerateAkunSiswa = () => {
+         setLoading(true); setMessage({ type: 'info', text: 'Sedang men-generate password otomatis...' });
+         callApi('generateStudentAccounts', { loginUser, sessionToken })
+         .then(res => {
+             setMessage({ type: res.success ? 'success' : 'error', text: res.message });
+             fetchDashboardData(loginUser, loginPass, false);
+         });
+      };
+
+      const openAddAcc = () => { setAccForm({ username: '', password: '', name: '', role: 'Siswa', rombel: '', expDate: '', status: 'Active', isEdit: false, originalUsername: '' }); setShowAccModal(true); };
+      const openEditAcc = (acc) => { 
+         let parsedDate = '';
+         if(acc['Masa Aktif (MM/DD/YYYY)']) {
+            const d = new Date(acc['Masa Aktif (MM/DD/YYYY)']);
+            if(!isNaN(d)) parsedDate = d.toISOString().split('T')[0];
+         }
+         setAccForm({ username: acc['Username'], password: acc['Password'], name: acc['Nama Pengguna'], role: acc['Role (Admin/Wali Kelas/Siswa)'], rombel: acc['Rombel Akses'], expDate: parsedDate, status: acc['Status (Active/Inactive)'], isEdit: true, originalUsername: acc['Username'] }); 
+         setShowAccModal(true); 
+      };
+      const handleDeleteAcc = (username) => {
+         if(!confirm('Hapus akun ' + username + '?')) return;
+         setLoading(true);
+         callApi('manageAccountData', { actionObj: 'DELETE', payload: {username}, reqUser: loginUser, reqToken: sessionToken })
+         .then(res => {
+             setMessage({ type: res.success ? 'success' : 'error', text: res.message });
+             fetchDashboardData(loginUser, loginPass, false);
+         });
+      };
+      const handleSaveAcc = (e) => {
+         e.preventDefault();
+         setShowAccModal(false); setLoading(true);
+         callApi('manageAccountData', { actionObj: accForm.isEdit ? 'UPDATE' : 'CREATE', payload: accForm, reqUser: loginUser, reqToken: sessionToken })
+         .then(res => {
+             setMessage({ type: res.success ? 'success' : 'error', text: res.message });
+             fetchDashboardData(loginUser, loginPass, false);
+         });
+      };
+
+      const handleScanMapel = () => {
+        setLoading(true); setMessage({ type: 'info', text: 'Memindai Mapel... Mohon tunggu.' });
+        callApi('scanAndGetMapel', { targetSemesters: calcMode, username: loginUser, sessionToken })
+        .then(res => {
+          setLoading(false);
+          if(res.success) { setMapelConfig(res.mapelList); setMessage({ type: 'success', text: 'Berhasil memindai '+res.mapelList.length+' mata pelajaran.' }); }
+          else setMessage({ type: 'error', text: res.message });
+        })
+        .catch(e => { setLoading(false); setMessage({ type: 'error', text: e.message }); });
+      };
+
+      const handleSaveMapel = () => { 
+          setLoading(true); 
+          callApi('saveMapelConfig', { mapelList: mapelConfig, username: loginUser, sessionToken })
+          .then(res => { setLoading(false); setMessage({ type: res.success ? 'success' : 'error', text: res.message }); }); 
+      };
+      
+      const handleMapelChange = (idx, field, val) => { const newConfig = [...mapelConfig]; if (field === 'alias') newConfig[idx][field] = val; else newConfig[idx][field] = !newConfig[idx][field]; setMapelConfig(newConfig); };
+      
+      const handleSync = () => { 
+          setLoading(true); setMessage({ type: 'info', text: 'Sinkronisasi berjalan...' }); 
+          callApi('processDataMerger', { targetSemesters: calcMode, username: loginUser, sessionToken })
+          .then(res => { 
+              setLoading(false); 
+              if(res.success) { setMessage({ type: 'success', text: res.message }); fetchDashboardData(loginUser, loginPass, false); setTab('editor'); } 
+              else setMessage({ type: 'error', text: res.message }); 
+          })
+          .catch(err => { setLoading(false); setMessage({ type: 'error', text: err.message }); }); 
+      };
+
+      const handleToggleLock = (rombel, isLocked) => { 
+          callApi('toggleRombelLock', { rombel, lockBoolean: !isLocked, username: loginUser, sessionToken })
+          .then(res => { 
+              if (res.success) { setLockStatus(p => ({...p, [rombel]: !isLocked})); setMessage({ type: 'success', text: res.message }); } 
+              else setMessage({ type: 'error', text: res.message }); 
+          }); 
+      };
+
+      const handleReviewDraft = (id, action) => {
+         setLoading(true);
+         callApi('reviewDraft', { draftId: id, action, username: loginUser, sessionToken })
+         .then(res => {
+             setMessage({ type: res.success ? 'success' : 'error', text: res.message });
+             fetchDashboardData(loginUser, loginPass, false);
+         });
+      };
+
+      const saveCellData = (nis, colName, oldVal, newVal) => {
+        const key = nis + '_' + colName; setCellLoading(prev => ({...prev, [key]: true}));
+        callApi('updateStudentScore', { nis, columnName: colName, oldVal, newVal, username: loginUser, sessionToken })
+        .then(res => {
+          setCellLoading(prev => ({...prev, [key]: false}));
+          if(res.success) {
+            if (res.isDraft) {
+               setMessage({ type: 'success', text: res.message });
+               fetchDashboardData(loginUser, loginPass, false); 
+            } else {
+               if (auth.role === 'Wali Kelas' && !waliEdits.includes(key)) setWaliEdits(prev => [...prev, key]);
+               setDbData(prev => prev.map(row => {
+                  if (row.NIS === nis) {
+                     const updatedRow = {...row, [colName]: newVal, 'Rerata Akhir SKL': res.newRerataSKL, 'Rerata Akhir Ijazah': res.newRerataIjazah, 'Status Data': res.newStatusData};
+                     if (res.mapelColName) updatedRow[res.mapelColName] = res.newRerataMapel; return updatedRow;
+                  }
+                  return row;
+               }));
+            }
+          } else { setMessage({ type: 'error', text: 'Gagal: ' + res.message }); fetchDashboardData(loginUser, loginPass, false); }
+        });
+      };
+
+      const getMapelAlias = (rawSubjectCode) => { 
+          if (!rawSubjectCode) return '';
+          const found = (Array.isArray(mapelConfig) ? mapelConfig : []).find(m => m && m.subject && typeof m.subject === 'string' && m.subject.toLowerCase() === String(rawSubjectCode).toLowerCase()); 
+          return found && found.alias ? found.alias : rawSubjectCode; 
+      };
+
+      const formatHeaderDisplay = (h, isSemesterView = false) => {
+         if (!h || typeof h !== 'string') return '';
+         if (h.startsWith('Sem')) { const parts = h.split('_'); return isSemesterView ? getMapelAlias(parts.slice(1).join('_')) : parts[0] + ' - ' + getMapelAlias(parts.slice(1).join('_')); }
+         if (h.startsWith('Rerata_') && !h.includes('Akhir')) return 'Rerata ' + getMapelAlias(h.replace('Rerata_', ''));
+         return h;
+      };
+
+      if (loading && !auth && loginUser && loginPass) return <div className="flex flex-col items-center justify-center min-h-screen"><i className="fas fa-circle-notch fa-spin text-5xl text-blue-500 mb-6"></i></div>;
+      
+      if (!auth || auth.status === 'unauthorized') return (
+        <div className="flex flex-col items-center justify-center min-h-screen p-4 sm:p-6 bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-900 dark:to-slate-800">
+          <div className="absolute top-4 right-4"><button onClick={toggleTheme} className="p-3 rounded-full bg-white/50 dark:bg-slate-800/50 hover:bg-white dark:hover:bg-slate-700 shadow-sm backdrop-blur-sm transition-all focus:outline-none">{isDark ? <i className="fas fa-sun text-amber-400 text-xl"></i> : <i className="fas fa-moon text-slate-600 text-xl"></i>}</button></div>
+          <div className="bg-white dark:bg-slate-800 p-6 sm:p-8 md:p-10 rounded-[2rem] shadow-2xl max-w-md w-full border border-slate-100 dark:border-slate-700 mx-4">
+            {appConfig.logoUrl ? 
+              <img src={appConfig.logoUrl} alt="Logo" className="w-20 h-20 sm:w-24 sm:h-24 object-contain mx-auto mb-6 drop-shadow-md" /> :
+              <div className="w-20 h-20 sm:w-24 sm:h-24 bg-blue-50 dark:bg-blue-900/30 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner"><i className="fas fa-shield-alt text-blue-600 dark:text-blue-400 text-3xl sm:text-4xl"></i></div>
+            }
+            <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-800 dark:text-white mb-2 text-center tracking-tight">Login Portal</h2>
+            <p className="text-slate-500 dark:text-slate-400 mb-6 sm:mb-8 text-center text-sm font-bold">
+               {appConfig.schoolName || 'Sistem Rekap Nilai Ijazah'} 
+               {appConfig.npsn && appConfig.npsn !== '-' ? <span className="block mt-1.5 font-semibold text-xs opacity-75">NPSN: {appConfig.npsn}</span> : ''}
+            </p>
+            {message && <div className="mb-6 text-sm text-red-600 bg-red-50 dark:bg-red-900/20 dark:text-red-400 p-4 rounded-xl font-semibold border border-red-100 dark:border-red-800 flex items-start"><i className="fas fa-exclamation-circle mt-0.5 mr-2"></i><span>{message.text}</span></div>}
+            <form onSubmit={handleLogin} className="space-y-4 sm:space-y-5">
+              <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1.5 ml-1">Username / NIS</label>
+                <input type="text" value={loginUser} onChange={e => setLoginUser(e.target.value)} placeholder="Masukkan username..." className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-slate-800 dark:text-white transition-all font-medium" required />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1.5 ml-1">Password</label>
+                <input type="password" value={loginPass} onChange={e => setLoginPass(e.target.value)} placeholder="••••••••" className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 tracking-widest text-lg text-slate-800 dark:text-white transition-all" required />
+              </div>
+              <button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 mt-2 rounded-xl shadow-md transition-colors focus:outline-none">{loading ? <i className="fas fa-circle-notch fa-spin"></i> : 'Masuk Sistem'}</button>
+            </form>
+          </div>
+        </div>
+      );
+
+      // DATA FILTERING
+      const safeSearchTerm = String(searchTerm || '').toLowerCase();
+      const filteredData = (Array.isArray(dbData) ? dbData : []).filter(row => {
+          if (!row) return false;
+          const matchRombel = (selectedRombel === 'Semua' || auth?.role === 'Siswa') ? true : row.Rombel === selectedRombel;
+          const matchSearch = safeSearchTerm === '' || String(row.NIS || '').toLowerCase().includes(safeSearchTerm) || String(row.NISN || '').toLowerCase().includes(safeSearchTerm) || String(row['Nama Lengkap'] || '').toLowerCase().includes(safeSearchTerm);
+          return matchRombel && matchSearch;
+      });
+      const filteredIncData = (Array.isArray(incDbData) ? incDbData : []).filter(row => {
+          if (!row) return false;
+          const matchRombel = (selectedRombel === 'Semua' || auth?.role === 'Siswa') ? true : row.Rombel === selectedRombel;
+          const matchSearch = safeSearchTerm === '' || String(row.NIS || '').toLowerCase().includes(safeSearchTerm) || String(row.NISN || '').toLowerCase().includes(safeSearchTerm) || String(row['Nama Lengkap'] || '').toLowerCase().includes(safeSearchTerm);
+          return matchRombel && matchSearch;
+      });
+      const filteredDrafts = (Array.isArray(drafts) ? drafts : []).filter(row => {
+          if (!row) return false;
+          return (selectedRombel === 'Semua' || auth?.role === 'Siswa') ? true : row.Rombel === selectedRombel;
+      });
+      const pendingDraftsCount = filteredDrafts.filter(d => d && d.Status === 'Pending').length;
+      const filteredAkunData = (Array.isArray(akunList) ? akunList : []).filter(row => {
+          if (!row) return false;
+          const term = String(searchTermAkun || '').toLowerCase();
+          return term === '' || String(row['Username'] || '').toLowerCase().includes(term) || String(row['Nama Pengguna'] || '').toLowerCase().includes(term) || String(row['Role (Admin/Wali Kelas/Siswa)'] || '').toLowerCase().includes(term);
+      });
+      const studentsInRombel = (Array.isArray(dbData) ? dbData : []).filter(row => row && (selectedRombel === 'Semua' ? true : row.Rombel === selectedRombel));
+      const studentData = studentsInRombel.find(row => row && row.NIS === selectedStudentNIS) || {};
+      const safeHeaders = Array.isArray(headers) ? headers : [];
+      const uniqueSubjects = [...new Set(safeHeaders.filter(h => h && typeof h === 'string' && h.startsWith('Sem')).map(h => h.split('_').slice(1).join('_')))];
+
+      // Pagination
+      const totalPages = Math.ceil(filteredData.length / itemsPerPage) || 1;
+      const indexOfLastItem = currentPage * itemsPerPage;
+      const indexOfFirstItem = indexOfLastItem - itemsPerPage;
+      const currentData = filteredData.slice(indexOfFirstItem, indexOfLastItem);
+      const availableSemesters = [1,2,3,4,5,6].filter(sem => safeHeaders.some(h => h && typeof h === 'string' && h.startsWith('Sem' + sem + '_')));
+
+      // Dashboard Rekapitulasi Vars
+      const dashboardDataList = studentsInRombel;
+      const totalSiswa = dashboardDataList.length;
+      const totalValidasiSiswa = dashboardDataList.filter(d => d && d['Verifikasi Siswa'] === 'Selesai').length;
+      const totalValidasiWali = dashboardDataList.filter(d => d && d['Verifikasi Wali'] === 'Selesai').length;
+      const totalTidakLengkap = dashboardDataList.filter(d => d && d['Status Data'] !== 'Lengkap').length;
+
+      const hasPendingUsulan = (Array.isArray(drafts) ? drafts : []).some(d => d && String(d.NIS) === String(selectedStudentNIS) && d.Status === 'Pending');
+      let bannerStyle = '', bannerTextClass = '', bannerIcon = '', bannerTitle = '', bannerDesc = '', showVerifButton = false;
+      if (studentData['Verifikasi Wali'] === 'Selesai') {
+          bannerStyle = 'bg-blue-100 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700'; bannerTextClass = 'text-blue-800 dark:text-blue-400'; bannerIcon = 'fa-check-double'; bannerTitle = 'Validasi Final Selesai'; bannerDesc = 'Data nilai Anda telah divalidasi final oleh Wali Kelas dan dikunci permanen.';
+      } else if (studentData['Verifikasi Siswa'] === 'Selesai') {
+          bannerStyle = 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800'; bannerTextClass = 'text-emerald-800 dark:text-emerald-400'; bannerIcon = 'fa-check-circle'; bannerTitle = 'Data Telah Diverifikasi'; bannerDesc = 'Anda telah menyetujui data. Menunggu validasi final Wali Kelas.';
+      } else if (hasPendingUsulan) {
+          bannerStyle = 'bg-amber-100 dark:bg-amber-900/40 border-amber-300 dark:border-amber-700'; bannerTextClass = 'text-amber-800 dark:text-amber-400'; bannerIcon = 'fa-hourglass-half fa-spin-pulse'; bannerTitle = 'Menunggu Validasi Usulan'; bannerDesc = 'Tombol Setujui disembunyikan karena Anda memiliki usulan perubahan nilai yang belum diproses oleh Wali Kelas.';
+      } else if (studentData['Status Data'] === 'Lengkap') {
+          bannerStyle = 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800'; bannerTextClass = 'text-blue-800 dark:text-blue-400'; bannerIcon = 'fa-clipboard-check'; bannerTitle = 'Data Lengkap & Siap Diverifikasi'; bannerDesc = 'Cek kembali nilai Anda. Jika seluruh nilai sudah benar, klik tombol Setujui.'; showVerifButton = true;
+      } else {
+          bannerStyle = 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800'; bannerTextClass = 'text-amber-800 dark:text-amber-400'; bannerIcon = 'fa-exclamation-triangle'; bannerTitle = 'Data Belum Lengkap'; bannerDesc = 'Terdapat nilai Mata Pelajaran Wajib yang masih kosong.';
+      }
+
+      const NavItem = ({ id, icon, label, badge = 0 }) => (
+        <button onClick={() => { setTab(id); if (window.innerWidth < 1024) setIsSidebarOpen(false); }} title={!isSidebarOpen ? label : ''} className={'relative w-full flex items-center p-3 sm:py-3.5 mb-1 rounded-xl transition-all duration-200 group focus:outline-none ' + (tab === id ? 'bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 font-bold' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-200 font-semibold') + (isSidebarOpen ? ' justify-start px-4' : ' justify-center px-0')}>
+          <div className="relative flex-shrink-0 flex items-center justify-center w-6">
+            <i className={'fas ' + icon + ' text-[1.1rem] transition-transform group-hover:scale-110'}></i>
+            {badge > 0 && !isSidebarOpen && <span className="absolute -top-2 -right-2 bg-red-500 w-2.5 h-2.5 rounded-full border border-white dark:border-slate-800"></span>}
+          </div>
+          <span className={'ml-4 whitespace-nowrap transition-opacity duration-200 ' + (isSidebarOpen ? 'opacity-100 block' : 'opacity-0 hidden')}>{label}</span>
+          {badge > 0 && isSidebarOpen && <span className="ml-auto bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold shadow-sm">{badge}</span>}
+        </button>
+      );
+
+      const renderPaginationUI = () => (
+        <div className="flex flex-col sm:flex-row items-center justify-between px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 shrink-0">
+          <div className="flex items-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3 sm:mb-0">
+            Tampil per
+            <select value={itemsPerPage} onChange={(e) => setItemsPerPage(Number(e.target.value))} className="mx-2 px-2 py-1 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm cursor-pointer">
+              <option value={10}>10</option>
+              <option value={15}>15</option>
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+            baris data (Total {filteredData.length})
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} disabled={currentPage === 1} className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors text-sm font-bold shadow-sm flex items-center">
+              <i className="fas fa-chevron-left mr-1.5 text-xs"></i> Prev
+            </button>
+            <span className="px-3 py-1.5 text-sm font-bold text-slate-700 dark:text-slate-200">Hal {currentPage} / {totalPages || 1}</span>
+            <button onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))} disabled={currentPage >= totalPages || totalPages === 0} className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors text-sm font-bold shadow-sm flex items-center">
+              Next <i className="fas fa-chevron-right ml-1.5 text-xs"></i>
+            </button>
+          </div>
+        </div>
+      );
+
+      return (
+        <div className="flex h-screen bg-slate-50 dark:bg-slate-900 overflow-hidden font-sans text-slate-800 dark:text-slate-200">
+          {isSidebarOpen && <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-40 lg:hidden transition-opacity" onClick={() => setIsSidebarOpen(false)}></div>}
+
+          <aside className={'fixed lg:static inset-y-0 left-0 z-50 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col transition-all duration-300 ease-in-out shadow-xl lg:shadow-none ' + (isSidebarOpen ? 'w-64 translate-x-0' : '-translate-x-full lg:translate-x-0 lg:w-20')}>
+            <div className="h-16 flex items-center justify-between px-4 sm:px-6 lg:px-4 border-b border-slate-200 dark:border-slate-700 shrink-0">
+               <div className={'flex items-center overflow-hidden transition-all duration-300 ' + (isSidebarOpen ? 'gap-3' : 'gap-0 lg:justify-center w-full')}>
+                 {appConfig.logoUrl ? <img src={appConfig.logoUrl} className="w-8 h-8 object-contain shrink-0 drop-shadow-sm" /> : <div className="bg-blue-600 text-white p-1.5 rounded-lg shadow-sm shrink-0 flex items-center justify-center w-8 h-8"><i className="fas fa-graduation-cap text-sm"></i></div>}
+                 <span className={'font-extrabold text-lg whitespace-nowrap text-slate-800 dark:text-white uppercase tracking-tight transition-opacity duration-300 ' + (isSidebarOpen ? 'opacity-100' : 'opacity-0 hidden')}>{appConfig.appName || 'SERASI'}</span>
+               </div>
+               
+               <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"><i className="fas fa-times text-xl"></i></button>
+               
+               <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} title={isSidebarOpen ? "Ciutkan Menu" : "Perluas Menu"} className="hidden lg:flex items-center justify-center w-8 h-8 bg-slate-100 hover:bg-blue-100 dark:bg-slate-800 dark:hover:bg-blue-900/40 text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 rounded-lg transition-colors focus:outline-none shadow-sm ml-2 shrink-0">
+                 <i className={'fas ' + (isSidebarOpen ? 'fa-chevron-left' : 'fa-bars')}></i>
+               </button>
+            </div>
+
+            <nav className="flex-1 overflow-y-auto py-4 px-3 hide-scrollbar flex flex-col space-y-1">
+               <div className={'px-3 mb-2 text-[10px] font-extrabold text-slate-400 uppercase tracking-widest transition-opacity duration-200 ' + (isSidebarOpen ? 'opacity-100 block' : 'opacity-0 hidden')}>Data & Nilai</div>
+               {auth.role !== 'Siswa' && <NavItem id="dashboard" icon="fa-chart-pie" label="Dashboard Rekap" />}
+               <NavItem id="semester" icon="fa-layer-group" label="Data Per Semester" />
+               {auth.role !== 'Siswa' && <NavItem id="editor" icon="fa-table" label="Tabel Master" />}
+               {auth.role !== 'Siswa' && <NavItem id="incomplete" icon="fa-exclamation-triangle" label="Data Incomplete" badge={filteredIncData.length} />}
+               
+               <div className={'px-3 mt-6 mb-2 text-[10px] font-extrabold text-slate-400 uppercase tracking-widest transition-opacity duration-200 ' + (isSidebarOpen ? 'opacity-100 block' : 'opacity-0 hidden')}>Validasi Data</div>
+               {auth.role === 'Siswa' 
+                 ? <NavItem id="validasi" icon="fa-history" label="Riwayat Usulan" /> 
+                 : <NavItem id="validasi" icon="fa-clipboard-check" label="Validasi & Riwayat" badge={pendingDraftsCount} />
+               }
+
+               {auth.role === 'Admin' && (
+                 <>
+                   <div className={'px-3 mt-6 mb-2 text-[10px] font-extrabold text-slate-400 uppercase tracking-widest transition-opacity duration-200 ' + (isSidebarOpen ? 'opacity-100 block' : 'opacity-0 hidden')}>Administrator</div>
+                   <NavItem id="akun" icon="fa-users" label="Manajemen Akun" />
+                   <NavItem id="mapel" icon="fa-list-check" label="Manajemen Mapel" />
+                   <NavItem id="sync" icon="fa-sync" label="Sinkronisasi" />
+                   <NavItem id="access" icon="fa-shield-alt" label="Keamanan Rombel" />
+                 </>
+               )}
+            </nav>
+          </aside>
+
+          <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden bg-slate-50/50 dark:bg-slate-900/50 relative">
+            <header className="h-16 bg-white/80 dark:bg-slate-800/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-700 flex items-center justify-between px-4 sm:px-6 lg:px-8 shrink-0 z-20">
+               <div className="flex items-center gap-4">
+                  <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="lg:hidden text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 p-2 -ml-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors focus:outline-none"><i className="fas fa-bars text-xl"></i></button>
+                  <div className="lg:hidden flex items-center gap-2.5 overflow-hidden"><span className="font-extrabold text-lg text-slate-800 dark:text-white uppercase tracking-tight truncate">{appConfig.appName || 'SERASI'}</span></div>
+               </div>
+
+               <div className="flex items-center gap-2 sm:gap-4">
+                 <button onClick={toggleTheme} className="p-2 sm:p-2.5 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors focus:outline-none shrink-0">{isDark ? <i className="fas fa-sun text-lg"></i> : <i className="fas fa-moon text-lg"></i>}</button>
+                 <div className="h-8 w-px bg-slate-200 dark:bg-slate-700 mx-1 hidden sm:block"></div>
+                 <div className="flex items-center gap-3 pl-1 sm:pl-2">
+                    <div className="hidden sm:flex flex-col text-right">
+                       <span className="font-bold text-sm text-slate-800 dark:text-slate-200 leading-tight">{auth.name}</span>
+                       <span className="text-[11px] font-bold text-slate-400 dark:text-slate-500">{auth.role} {auth.role === 'Wali Kelas' ? '(' + auth.rombelAkses + ')' : ''}</span>
+                    </div>
+                    <div className={"w-9 h-9 rounded-full flex items-center justify-center border shrink-0 " + (auth.role === 'Siswa' ? 'bg-orange-100 dark:bg-orange-900/50 text-orange-600 dark:text-orange-400 border-orange-200 dark:border-orange-800' : 'bg-blue-100 dark:bg-blue-900/50 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800')}>
+                       <i className={"fas text-sm " + (auth.role==='Siswa' ? 'fa-user-graduate' : 'fa-user')}></i>
+                    </div>
+                    <button onClick={() => handleLogout(false)} className="ml-1 p-2 sm:p-2.5 rounded-xl text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors focus:outline-none shrink-0" title="Keluar"><i className="fas fa-sign-out-alt text-lg"></i></button>
+                 </div>
+               </div>
+            </header>
+
+            <main className="flex-1 flex flex-col overflow-hidden p-4 sm:p-6 lg:p-8 relative">
+              {message && (
+                <div className={'mb-6 p-4 rounded-xl text-sm font-bold flex shrink-0 justify-between items-start sm:items-center shadow-sm border ' + (message.type === 'error' ? 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:border-red-800 dark:text-red-400' : message.type === 'success' ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/20 dark:border-emerald-800 dark:text-emerald-400' : 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-400')}>
+                  <div className="flex items-start sm:items-center"><i className={"fas mt-0.5 sm:mt-0 mr-3 text-base sm:text-lg " + (message.type==='error'?'fa-times-circle':'fa-info-circle')}></i> <span>{message.text}</span></div>
+                  <button onClick={() => setMessage(null)} className="opacity-60 hover:opacity-100 ml-3 focus:outline-none"><i className="fas fa-times"></i></button>
+                </div>
+              )}
+
+              {showAccModal && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+                  <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-lg border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col max-h-[90vh]">
+                     <div className="flex justify-between items-center p-5 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 shrink-0">
+                        <h3 className="text-lg font-extrabold text-slate-800 dark:text-white">{accForm.isEdit ? 'Edit Akun' : 'Tambah Akun Baru'}</h3>
+                        <button onClick={() => setShowAccModal(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none"><i className="fas fa-times text-xl"></i></button>
+                     </div>
+                     <form id="accFormBody" onSubmit={handleSaveAcc} className="p-5 overflow-y-auto hide-scrollbar space-y-4 flex-1">
+                        <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Username / NIS <span className="text-red-500">*</span></label><input type="text" required value={accForm.username} onChange={e=>setAccForm({...accForm, username: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white" /></div>
+                        <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Password <span className="text-red-500">*</span></label><input type="text" required value={accForm.password} onChange={e=>setAccForm({...accForm, password: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white" /></div>
+                        <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Nama Pengguna <span className="text-red-500">*</span></label><input type="text" required value={accForm.name} onChange={e=>setAccForm({...accForm, name: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white" /></div>
+                        <div className="grid grid-cols-2 gap-4">
+                           <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Role <span className="text-red-500">*</span></label><select value={accForm.role} onChange={e=>setAccForm({...accForm, role: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white"><option value="Siswa">Siswa</option><option value="Wali Kelas">Wali Kelas</option><option value="Admin">Admin</option></select></div>
+                           <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Rombel Akses</label><input type="text" value={accForm.rombel} onChange={e=>setAccForm({...accForm, rombel: e.target.value})} placeholder="Misal: 9A / Semua" className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white" /></div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                           <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Masa Aktif</label><input type="date" value={accForm.expDate} onChange={e=>setAccForm({...accForm, expDate: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white" /></div>
+                           <div><label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Status</label><select value={accForm.status} onChange={e=>setAccForm({...accForm, status: e.target.value})} className="w-full p-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-white"><option value="Active">Active</option><option value="Inactive">Inactive</option></select></div>
+                        </div>
+                     </form>
+                     <div className="p-5 border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 flex justify-end gap-3 shrink-0">
+                        <button type="button" onClick={() => setShowAccModal(false)} className="px-5 py-2.5 rounded-xl font-bold text-slate-600 bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600 transition-colors">Batal</button>
+                        <button type="submit" form="accFormBody" className="px-5 py-2.5 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 transition-colors flex items-center"><i className="fas fa-save mr-2"></i> Simpan</button>
+                     </div>
+                  </div>
+                </div>
+              )}
+
+              <div className='bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col flex-1 min-h-0'>
+
+                {/* TAB: DASHBOARD REKAPITULASI */}
+                {tab === 'dashboard' && auth.role !== 'Siswa' && (
+                  <div className='p-5 sm:p-6 lg:p-8 flex flex-col h-full overflow-y-auto hide-scrollbar'>
+                     <div className='flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 sm:mb-8 gap-4 shrink-0'>
+                        <div>
+                          <h2 className='text-xl sm:text-2xl font-extrabold text-slate-800 dark:text-white'>Dashboard Rekapitulasi</h2>
+                          <p className="text-sm text-slate-500 mt-1">Ringkasan progres validasi data nilai ijazah siswa.</p>
+                        </div>
+                        <div className='flex items-center bg-slate-50 dark:bg-slate-900 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 shrink-0 w-full sm:w-auto shadow-sm'>
+                          <i className="fas fa-users text-slate-400 ml-2 mr-1"></i>
+                          <select className='bg-transparent font-bold px-2 py-1 focus:outline-none text-sm text-slate-800 dark:text-slate-200 cursor-pointer w-full sm:w-48' value={selectedRombel} onChange={e => setSelectedRombel(e.target.value)} disabled={auth.role === 'Wali Kelas' && auth.rombelAkses !== 'Semua'}>
+                            {auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua">Semua Rombel</option> : null}
+                            {rombels.map(r => <option key={r} value={r}>Kelas {r}</option>)}
+                          </select>
+                        </div>
+                     </div>
+
+                     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-6 mb-8 shrink-0">
+                        <div className="bg-gradient-to-br from-blue-500 to-blue-600 p-6 rounded-2xl shadow-lg shadow-blue-500/30 text-white relative overflow-hidden group">
+                           <i className="fas fa-users absolute -right-4 -bottom-4 text-7xl opacity-20 group-hover:scale-110 transition-transform"></i>
+                           <div className="relative z-10">
+                             <h4 className="font-bold text-blue-100 mb-1">Total Siswa</h4>
+                             <div className="text-4xl font-black">{totalSiswa}</div>
+                             <p className="text-xs text-blue-200 mt-2">{selectedRombel === 'Semua' ? 'Keseluruhan data siswa' : 'Rombel: ' + selectedRombel}</p>
+                           </div>
+                        </div>
+                        
+                        <div className="bg-gradient-to-br from-emerald-500 to-emerald-600 p-6 rounded-2xl shadow-lg shadow-emerald-500/30 text-white relative overflow-hidden group">
+                           <i className="fas fa-user-check absolute -right-4 -bottom-4 text-7xl opacity-20 group-hover:scale-110 transition-transform"></i>
+                           <div className="relative z-10">
+                             <h4 className="font-bold text-emerald-100 mb-1">Validasi Siswa</h4>
+                             <div className="text-4xl font-black">{totalValidasiSiswa} <span className="text-sm font-bold opacity-75">/ {totalSiswa}</span></div>
+                             <p className="text-xs text-emerald-200 mt-2">Siswa telah menyetujui data</p>
+                             <div className="w-full bg-emerald-700/50 rounded-full h-1.5 mt-3"><div className="bg-white h-1.5 rounded-full transition-all duration-1000" style={{width: (totalSiswa===0?0:(totalValidasiSiswa/totalSiswa)*100) + '%'}}></div></div>
+                           </div>
+                        </div>
+
+                        <div className="bg-gradient-to-br from-purple-500 to-purple-600 p-6 rounded-2xl shadow-lg shadow-purple-500/30 text-white relative overflow-hidden group">
+                           <i className="fas fa-check-double absolute -right-4 -bottom-4 text-7xl opacity-20 group-hover:scale-110 transition-transform"></i>
+                           <div className="relative z-10">
+                             <h4 className="font-bold text-purple-100 mb-1">Finalisasi Wali</h4>
+                             <div className="text-4xl font-black">{totalValidasiWali} <span className="text-sm font-bold opacity-75">/ {totalSiswa}</span></div>
+                             <p className="text-xs text-purple-200 mt-2">Data dikunci & final</p>
+                             <div className="w-full bg-purple-700/50 rounded-full h-1.5 mt-3"><div className="bg-white h-1.5 rounded-full transition-all duration-1000" style={{width: (totalSiswa===0?0:(totalValidasiWali/totalSiswa)*100) + '%'}}></div></div>
+                           </div>
+                        </div>
+
+                        <div className="bg-gradient-to-br from-red-500 to-red-600 p-6 rounded-2xl shadow-lg shadow-red-500/30 text-white relative overflow-hidden group">
+                           <i className="fas fa-exclamation-triangle absolute -right-4 -bottom-4 text-7xl opacity-20 group-hover:scale-110 transition-transform"></i>
+                           <div className="relative z-10">
+                             <h4 className="font-bold text-red-100 mb-1">Data Belum Lengkap</h4>
+                             <div className="text-4xl font-black">{totalTidakLengkap}</div>
+                             <p className="text-xs text-red-200 mt-2">Mapel Wajib masih kosong</p>
+                           </div>
+                        </div>
+                     </div>
+                     
+                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-0 pb-4">
+                        <div className="bg-slate-50 dark:bg-slate-900/50 p-5 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col h-full">
+                           <h3 className="font-extrabold text-slate-800 dark:text-slate-200 mb-4 flex items-center shrink-0"><i className="fas fa-clock text-amber-500 mr-2"></i> Siswa Menunggu Finalisasi ({dashboardDataList.filter(d => d['Verifikasi Siswa'] === 'Selesai' && d['Verifikasi Wali'] !== 'Selesai').length})</h3>
+                           <div className="space-y-3 overflow-y-auto hide-scrollbar flex-1 pr-2">
+                              {dashboardDataList.filter(d => d['Verifikasi Siswa'] === 'Selesai' && d['Verifikasi Wali'] !== 'Selesai').length === 0 ? <p className="text-sm text-slate-500">Tidak ada siswa yang menunggu finalisasi.</p> :
+                              dashboardDataList.filter(d => d['Verifikasi Siswa'] === 'Selesai' && d['Verifikasi Wali'] !== 'Selesai').map(d => (
+                                 <div key={d.NIS} className="flex justify-between items-center p-3 bg-white dark:bg-slate-800 rounded-xl border border-slate-100 dark:border-slate-700">
+                                    <div><div className="font-bold text-sm text-slate-800 dark:text-slate-200">{d['Nama Lengkap']}</div><div className="text-xs text-slate-500">{d.NIS} - Kelas {d.Rombel}</div></div>
+                                    <button onClick={() => { setTab('editor'); setSelectedRombel(d.Rombel); setSearchTerm(d.NIS); }} className="text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-400 px-3 py-1.5 rounded-lg font-bold hover:bg-blue-200 transition-colors">Periksa</button>
+                                 </div>
+                              ))}
+                           </div>
+                        </div>
+                        <div className="bg-slate-50 dark:bg-slate-900/50 p-5 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col h-full">
+                           <h3 className="font-extrabold text-slate-800 dark:text-slate-200 mb-4 flex items-center shrink-0"><i className="fas fa-exclamation-circle text-red-500 mr-2"></i> Butuh Perhatian Data ({totalTidakLengkap})</h3>
+                           <div className="space-y-3 overflow-y-auto hide-scrollbar flex-1 pr-2">
+                              {totalTidakLengkap === 0 ? <p className="text-sm text-slate-500">Semua data siswa sudah lengkap.</p> :
+                              dashboardDataList.filter(d => d['Status Data'] !== 'Lengkap').slice(0, 50).map(d => (
+                                 <div key={d.NIS} className="flex justify-between items-center p-3 bg-white dark:bg-slate-800 rounded-xl border border-red-100 dark:border-red-900/30">
+                                    <div><div className="font-bold text-sm text-slate-800 dark:text-slate-200">{d['Nama Lengkap']}</div><div className="text-xs text-red-500 dark:text-red-400">Data Tidak Lengkap</div></div>
+                                    <button onClick={() => { setTab('incomplete'); setSelectedRombel(d.Rombel); setSearchTerm(d.NIS); }} className="text-xs bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300 px-3 py-1.5 rounded-lg font-bold hover:bg-slate-200 transition-colors">Lihat Detail</button>
+                                 </div>
+                              ))}
+                           </div>
+                        </div>
+                     </div>
+                  </div>
+                )}
+
+                {/* TAB: MANAJEMEN AKUN (ADMIN ONLY) */}
+                {tab === 'akun' && auth.role === 'Admin' && (
+                  <div className='p-5 sm:p-6 flex flex-col h-full flex-1 overflow-auto'>
+                    <div className='flex flex-col sm:flex-row justify-between items-start sm:items-center mb-5 sm:mb-6 gap-4 border-b border-slate-100 dark:border-slate-700 pb-4 shrink-0'>
+                       <div>
+                         <h2 className='text-lg sm:text-xl font-extrabold text-slate-800 dark:text-white'>Manajemen Akun Pengguna</h2>
+                         <p className="text-sm text-slate-500 mt-1">Daftar kredensial user untuk akses portal.</p>
+                       </div>
+                       <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
+                         <div className="relative w-full sm:w-64">
+                           <i className="fas fa-search absolute left-3.5 top-1/2 transform -translate-y-1/2 text-slate-400"></i>
+                           <input type="text" placeholder="Cari Username/Nama/Role..." value={searchTermAkun} onChange={e => setSearchTermAkun(e.target.value)} className="pl-10 pr-4 py-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium text-slate-700 dark:text-slate-200 shadow-sm"/>
+                         </div>
+                         <div className="h-8 w-px bg-slate-200 dark:bg-slate-700 mx-1 hidden sm:block"></div>
+                         <button onClick={handleGenerateAkunSiswa} disabled={loading} className="w-full sm:w-auto bg-purple-600 hover:bg-purple-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold shadow-sm transition-colors focus:outline-none disabled:opacity-50 flex items-center justify-center">
+                            <i className="fas fa-key mr-2"></i> Generate Akun
+                         </button>
+                         <button onClick={openAddAcc} disabled={loading} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold shadow-sm transition-colors focus:outline-none disabled:opacity-50 flex items-center justify-center">
+                            <i className="fas fa-plus mr-2"></i> Tambah Akun
+                         </button>
+                       </div>
+                    </div>
+                    
+                    <div className='table-container flex-1 overflow-auto border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm relative'>
+                       <table className='w-full whitespace-nowrap text-sm text-left'>
+                         <thead className='text-xs uppercase bg-slate-100 dark:bg-slate-900 text-slate-500 dark:text-slate-400 sticky top-0 z-10 shadow-sm'>
+                           <tr><th className="px-5 py-4">Username/NIS</th><th className="px-5 py-4">Password</th><th className="px-5 py-4">Nama Lengkap</th><th className="px-5 py-4">Role & Rombel</th><th className="px-5 py-4 text-center">Masa Aktif</th><th className="px-5 py-4 text-center">Aksi / Status</th></tr>
+                         </thead>
+                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                           {filteredAkunData.length === 0 ? (
+                               <tr><td colSpan="6" className="text-center py-10 text-slate-400 bg-white dark:bg-slate-800">Tidak ada akun yang cocok dengan pencarian.</td></tr>
+                           ) : (
+                               filteredAkunData.map((row, i) => {
+                                 const isActive = String(row['Status (Active/Inactive)'] || '').trim().toLowerCase() !== 'inactive' && String(row['Status (Active/Inactive)'] || '').trim().toLowerCase() !== 'nonaktif';
+                                 const expDateRaw = row['Masa Aktif (MM/DD/YYYY)'];
+                                 let expText = 'Tanpa Batas';
+                                 
+                                 if (expDateRaw) {
+                                    const parsedDate = new Date(expDateRaw);
+                                    if (!isNaN(parsedDate.getTime())) {
+                                       expText = parsedDate.toLocaleDateString('id-ID', {day: '2-digit', month: 'short', year: 'numeric'});
+                                    } else {
+                                       expText = String(expDateRaw);
+                                    }
+                                 }
+
+                                 return (
+                                   <tr key={i} className="bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
+                                     <td className="px-5 py-3 font-mono font-bold text-slate-800 dark:text-slate-200">{row['Username'] || '-'}</td>
+                                     <td className="px-5 py-3 font-mono text-slate-500 dark:text-slate-400">{row['Password'] || '-'}</td>
+                                     <td className="px-5 py-3 font-semibold text-slate-700 dark:text-slate-300">{row['Nama Pengguna'] || '-'}</td>
+                                     <td className="px-5 py-3 text-slate-600 dark:text-slate-400">{row['Role (Admin/Wali Kelas/Siswa)'] || '-'} {row['Role (Admin/Wali Kelas/Siswa)'] !== 'Admin' && <span className="opacity-60 ml-1">({row['Rombel Akses'] || '-'})</span>}</td>
+                                     <td className="px-5 py-3 text-center text-xs font-bold text-slate-500 dark:text-slate-400">{expText}</td>
+                                     <td className="px-5 py-3 text-center">
+                                        <div className="flex items-center justify-center gap-2">
+                                          {isActive ? <span className="bg-emerald-100 text-emerald-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider">Active</span> : <span className="bg-red-100 text-red-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider">Inactive</span>}
+                                          <button onClick={() => openEditAcc(row)} className="w-7 h-7 rounded bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-400 dark:hover:bg-blue-900/60 transition-colors focus:outline-none" title="Edit Akun"><i className="fas fa-pen text-xs"></i></button>
+                                          {row['Username'] !== 'admin' && <button onClick={() => handleDeleteAcc(row['Username'])} className="w-7 h-7 rounded bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/60 transition-colors focus:outline-none" title="Hapus Akun"><i className="fas fa-trash text-xs"></i></button>}
+                                        </div>
+                                     </td>
+                                   </tr>
+                                 );
+                               })
+                           )}
+                         </tbody>
+                       </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB: VALIDASI / DRAFT USULAN */}
+                {tab === 'validasi' && (
+                  <div className='p-5 sm:p-6 flex flex-col h-full flex-1 overflow-auto'>
+                     <div className='flex flex-col sm:flex-row justify-between items-start sm:items-center mb-5 sm:mb-6 gap-4 border-b border-slate-100 dark:border-slate-700 pb-4 shrink-0'>
+                        <div>
+                          <h2 className='text-lg sm:text-xl font-extrabold text-slate-800 dark:text-white'>{auth.role === 'Siswa' ? 'Riwayat Usulan Perubahan Nilai' : 'Validasi & Riwayat Usulan Siswa'}</h2>
+                          <p className="text-sm text-slate-500 mt-1">{auth.role === 'Siswa' ? 'Pantau status nilai yang Anda ubah di sini.' : 'Daftar pengajuan perubahan nilai dan riwayat dari siswa.'}</p>
+                        </div>
+                        {auth.role !== 'Siswa' && (
+                           <div className='flex items-center bg-slate-50 dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-700 w-full sm:w-auto shrink-0'>
+                              <select className='bg-transparent font-bold px-3 py-1.5 w-full sm:w-40 focus:outline-none text-slate-800 dark:text-slate-200 text-sm sm:text-base' value={selectedRombel} onChange={e => setSelectedRombel(e.target.value)} disabled={auth.role === 'Wali Kelas' && auth.rombelAkses !== 'Semua'}>{auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua">Semua Rombel</option> : null}{rombels.map(r => <option key={r} value={r} className="dark:bg-slate-800">Kelas {r}</option>)}</select>
+                           </div>
+                        )}
+                     </div>
+                     <div className='table-container flex-1 overflow-auto border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm relative'>
+                        <table className='w-full whitespace-nowrap text-sm text-left'><thead className='text-xs uppercase bg-slate-100 dark:bg-slate-900 text-slate-500 dark:text-slate-400 sticky top-0 z-30 shadow-sm'><tr><th className="px-5 py-4">Waktu</th><th className="px-5 py-4">Siswa</th><th className="px-5 py-4">Mapel</th><th className="px-5 py-4 text-center">Perubahan</th><th className="px-5 py-4 text-center">Status / Aksi</th></tr></thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                          {filteredDrafts.length === 0 ? <tr><td colSpan="5" className="text-center py-20 bg-white dark:bg-slate-800 font-bold text-slate-400 dark:text-slate-500"><i className="fas fa-inbox text-4xl mb-3 block opacity-50"></i>Belum ada data {auth.role === 'Siswa' ? 'usulan' : 'draft yang perlu divalidasi'}.</td></tr> : 
+                            filteredDrafts.map((row, i) => (
+                               <tr key={i} className="bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
+                                 <td className="px-5 py-3 text-slate-500 dark:text-slate-400 text-xs">{row['Waktu Pengajuan'] ? new Date(row['Waktu Pengajuan']).toLocaleString('id-ID') : '-'}</td>
+                                 <td className="px-5 py-3"><div className="font-bold text-slate-800 dark:text-slate-100">{row['Nama Siswa']}</div><div className="text-xs text-slate-500">{row['NIS']} • Kelas {row['Rombel']}</div></td>
+                                 <td className="px-5 py-3 font-semibold text-slate-700 dark:text-slate-300"><span className="bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 px-2 py-1 rounded text-xs">{formatHeaderDisplay(row['Kolom Mapel'])}</span></td>
+                                 <td className="px-5 py-3 text-center">
+                                    <div className="flex items-center justify-center gap-3 font-mono text-sm">
+                                       <span className="text-slate-500 line-through decoration-red-500">{row['Nilai Lama'] || '-'}</span>
+                                       <i className="fas fa-arrow-right text-slate-300 dark:text-slate-600"></i>
+                                       <span className="font-bold text-emerald-600 dark:text-emerald-400 px-2 py-1 bg-emerald-50 dark:bg-emerald-900/20 rounded">{row['Nilai Baru'] || '-'}</span>
+                                    </div>
+                                 </td>
+                                 <td className="px-5 py-3">
+                                    <div className="flex items-center justify-center">
+                                       {auth.role !== 'Siswa' && row['Status'] === 'Pending' ? (
+                                          <>
+                                            <button onClick={() => handleReviewDraft(row['ID Draft'], 'Approve')} className="bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-colors mr-2"><i className="fas fa-check mr-1"></i> Setuju</button>
+                                            <button onClick={() => handleReviewDraft(row['ID Draft'], 'Reject')} className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-colors"><i className="fas fa-times mr-1"></i> Tolak</button>
+                                          </>
+                                       ) : (
+                                           <span className={'px-3 py-1 rounded text-xs font-bold ' + (row['Status'] === 'Pending' ? 'bg-amber-100 text-amber-700' : row['Status'] === 'Disetujui' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700')}>{row['Status']}</span>
+                                       )}
+                                    </div>
+                                 </td>
+                               </tr>
+                            ))
+                          }
+                        </tbody></table>
+                     </div>
+                  </div>
+                )}
+
+                {/* TAB: DATA PER SEMESTER (TAMPILAN MENDATAR PER SISWA) */}
+                {tab === 'semester' && (
+                  <div className='p-4 sm:p-6 flex flex-col h-full flex-1 overflow-auto'>
+                    <div className='flex flex-col lg:flex-row justify-between items-start lg:items-center mb-4 sm:mb-5 gap-4 shrink-0'>
+                      <div className="w-full lg:w-auto">
+                        <h2 className='text-lg sm:text-xl lg:text-2xl font-extrabold text-slate-800 dark:text-white'>Data Nilai Per Semester</h2>
+                        <p className='text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3'>
+                           <span>{auth.role === 'Siswa' ? 'Lengkapi nilai. Jika seluruh data benar, klik tombol Setujui Data di bawah.' : 'Tampilan mendatar per siswa. Pilih nama siswa untuk memantau/mengedit.'}</span>
+                           {auth.role !== 'Siswa' && <span className="inline-flex items-center text-blue-500 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded border border-blue-100 dark:border-blue-800"><i className="fas fa-user-edit text-[10px] mr-1.5"></i> Edit Mandiri Wali Kelas</span>}
+                        </p>
+                      </div>
+                      
+                      {auth.role !== 'Siswa' && (
+                         <div className='flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto'>
+                           <div className='flex items-center bg-slate-50 dark:bg-slate-900 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 shrink-0'>
+                             <i className="fas fa-users text-slate-400 ml-2 mr-1"></i>
+                             <select className='bg-transparent font-bold px-2 py-1 focus:outline-none text-sm text-slate-800 dark:text-slate-200 cursor-pointer w-full' value={selectedRombel} onChange={e => setSelectedRombel(e.target.value)} disabled={auth.role === 'Wali Kelas' && auth.rombelAkses !== 'Semua'}>
+                               {auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua">Semua Rombel</option> : null}
+                               {rombels.map(r => <option key={r} value={r}>Kelas {r}</option>)}
+                             </select>
+                           </div>
+
+                           <div className='flex items-center bg-white dark:bg-slate-800 p-1.5 rounded-xl border border-blue-300 dark:border-blue-700 shadow-sm shrink-0 w-full sm:w-72'>
+                             <i className="fas fa-user-graduate text-blue-500 ml-2 mr-2"></i>
+                             <select className='bg-transparent font-bold px-1 py-1 w-full focus:outline-none text-sm text-slate-800 dark:text-slate-200 cursor-pointer truncate' value={selectedStudentNIS} onChange={e => setSelectedStudentNIS(e.target.value)}>
+                               {studentsInRombel.map(s => <option key={s.NIS} value={s.NIS}>{s['Nama Lengkap']} ({s.NIS})</option>)}
+                             </select>
+                           </div>
+                         </div>
+                      )}
+                    </div>
+
+                    {loading ? <div className="flex-1 flex items-center justify-center py-20"><i className="fas fa-circle-notch fa-spin text-4xl text-blue-500"></i></div> : (
+                      <div className='flex-1 flex flex-col min-h-0 bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-2 sm:p-3'>
+                        
+                        {studentData.NIS && (
+                           <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl p-4 sm:p-5 mb-4 border border-slate-100 dark:border-slate-800 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 shrink-0">
+                              <div className="flex items-center gap-4">
+                                 <div className="w-12 h-12 sm:w-14 sm:h-14 bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center text-xl sm:text-2xl font-black border border-blue-200 dark:border-blue-800 shrink-0 shadow-inner">
+                                    {String(studentData['Nama Lengkap']).charAt(0).toUpperCase()}
+                                 </div>
+                                 <div>
+                                    <h3 className="font-extrabold text-lg sm:text-xl text-slate-800 dark:text-white leading-tight">{studentData['Nama Lengkap']}</h3>
+                                    <p className="text-xs sm:text-sm font-bold text-slate-500 dark:text-slate-400 mt-1">NIS: {studentData.NIS} <span className="mx-2 opacity-50">|</span> Kelas: {studentData.Rombel}</p>
+                                 </div>
+                              </div>
+                              <div className="flex gap-3 sm:gap-4 w-full lg:w-auto">
+                                 <div className="flex-1 text-center px-4 py-2 sm:py-3 bg-white dark:bg-slate-800 rounded-lg sm:rounded-xl shadow-sm border border-slate-200 dark:border-slate-700">
+                                    <div className="text-[10px] sm:text-xs uppercase font-black text-slate-400 mb-0.5 sm:mb-1">Rerata SKL</div>
+                                    <div className="font-black text-base sm:text-lg text-amber-600 dark:text-amber-400">{studentData['Rerata Akhir SKL'] || '-'}</div>
+                                 </div>
+                                 <div className="flex-1 text-center px-4 py-2 sm:py-3 bg-white dark:bg-slate-800 rounded-lg sm:rounded-xl shadow-sm border border-slate-200 dark:border-slate-700">
+                                    <div className="text-[10px] sm:text-xs uppercase font-black text-slate-400 mb-0.5 sm:mb-1">Rerata Ijazah</div>
+                                    <div className="font-black text-base sm:text-lg text-blue-600 dark:text-blue-400">{studentData['Rerata Akhir Ijazah'] || '-'}</div>
+                                 </div>
+                              </div>
+                           </div>
+                        )}
+
+                        {/* Banner Peringatan Verifikasi untuk Siswa */}
+                        {auth.role === 'Siswa' && studentData.NIS && (
+                           <div className={'rounded-xl p-4 sm:p-5 mb-4 border flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-sm shrink-0 ' + bannerStyle}>
+                               <div>
+                                   <h4 className={'font-extrabold text-base sm:text-lg ' + bannerTextClass}>
+                                       <i className={'fas mr-2 ' + bannerIcon}></i>
+                                       {bannerTitle}
+                                   </h4>
+                                   <p className="text-sm mt-1 font-medium text-slate-600 dark:text-slate-300">
+                                       {bannerDesc}
+                                   </p>
+                               </div>
+                               {showVerifButton && (
+                                   <button onClick={() => { if(confirm('Pastikan semua data sudah benar. Form nilai akan dikunci setelah ini. Lanjutkan?')) handleVerification(studentData.NIS, 'VERIF_SISWA') }} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-5 rounded-xl shadow-sm transition-colors w-full sm:w-auto shrink-0"><i className="fas fa-check-double mr-2"></i> Semua Data Benar</button>
+                               )}
+                           </div>
+                        )}
+
+                        <div className='flex-1 overflow-auto rounded-xl border border-slate-200 dark:border-slate-700 relative table-container'>
+                           {!studentData.NIS ? (
+                              <div className="flex flex-col items-center justify-center h-full text-slate-400 p-10 text-center">
+                                 <i className="fas fa-user-slash text-5xl mb-4 opacity-50"></i>
+                                 <p className="font-bold">Silakan pilih siswa terlebih dahulu atau pastikan data rombel tidak kosong.</p>
+                              </div>
+                           ) : (
+                              <table className='w-full whitespace-nowrap text-sm text-left border-collapse'>
+                                <thead className='text-xs text-slate-500 dark:text-slate-400 uppercase bg-slate-100 dark:bg-slate-900 sticky top-0 z-30 font-extrabold'>
+                                  <tr>
+                                    <th className="px-5 py-4 border-b border-r border-slate-200 dark:border-slate-700 w-1/3 min-w-[200px] sticky left-0 z-40 bg-slate-100 dark:bg-slate-900 shadow-[1px_0_0_0_#e2e8f0] dark:shadow-[1px_0_0_0_#334155]">Mata Pelajaran</th>
+                                    {availableSemesters.map(sem => (
+                                       <th key={sem} className="px-4 py-4 border-b border-r border-slate-200 dark:border-slate-700 text-center">Smstr {sem}</th>
+                                    ))}
+                                    <th className="px-4 py-4 border-b border-slate-200 dark:border-slate-700 text-center bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400">Rerata Mapel</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50 bg-white dark:bg-slate-800">
+                                  {uniqueSubjects.map(subj => {
+                                     const rerataColName = 'Rerata_' + subj;
+                                     const mapelInfo = mapelConfig.find(m => m.subject.toLowerCase() === subj.toLowerCase());
+                                     const isWajib = mapelInfo && mapelInfo.isIjazah;
+                                     const isToleransi = mapelInfo && mapelInfo.isToleransi;
+
+                                     return (
+                                      <tr key={subj} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors group">
+                                        <td className="px-5 py-3.5 font-bold text-slate-700 dark:text-slate-200 border-r border-slate-100 dark:border-slate-700/50 whitespace-normal sticky left-0 z-20 bg-white dark:bg-slate-800 group-hover:bg-slate-50 dark:group-hover:bg-slate-700/30 shadow-[1px_0_0_0_#f1f5f9] dark:shadow-[1px_0_0_0_#1e293b]">
+                                           <div className="flex flex-col">
+                                              <span>{getMapelAlias(subj)}</span>
+                                              <span className={"text-[10px] mt-0.5 " + (isWajib ? "text-amber-600 dark:text-amber-400" : "text-slate-400")}>
+                                                  {isWajib ? 'Masuk Ijazah (Wajib)' : 'Muatan Sekolah (Non-Wajib)'}
+                                                  {isToleransi && <span className="ml-1 text-purple-500 font-bold" title="Mapel ini tidak dicek kelengkapannya"><i className="fas fa-shield-alt"></i> Ditoleransi</span>}
+                                              </span>
+                                           </div>
+                                        </td>
+                                        {availableSemesters.map(sem => {
+                                           const colName = 'Sem' + sem + '_' + subj;
+                                           const val = studentData[colName] !== undefined ? studentData[colName] : '';
+                                           
+                                           if (!headers.includes(colName)) return <td key={sem} className="px-4 py-3 border-r border-slate-100 dark:border-slate-700/50 text-center font-black text-slate-200 dark:text-slate-700 bg-slate-50/50 dark:bg-slate-900/30 cursor-not-allowed">-</td>;
+
+                                           const isLockedForUser = lockStatus[studentData.Rombel] || studentData['Verifikasi Siswa'] === 'Selesai' || studentData['Verifikasi Wali'] === 'Selesai';
+                                           const pendingDraft = drafts.find(d => String(d.NIS) === String(selectedStudentNIS) && d['Kolom Mapel'] === colName && d.Status === 'Pending');
+                                           const isPending = !!pendingDraft;
+                                           const pendingValue = isPending ? pendingDraft['Nilai Baru'] : '';
+
+                                           return (
+                                             <td key={sem} className="px-4 py-2 sm:py-2.5 border-r border-slate-100 dark:border-slate-700/50 text-center">
+                                                <EditableCell 
+                                                   value={val} 
+                                                   isPending={isPending} 
+                                                   pendingValue={pendingValue}
+                                                   isEditedByWali={waliEdits.includes(selectedStudentNIS + '_' + colName)}
+                                                   loadingStatus={cellLoading[selectedStudentNIS + '_' + colName]} 
+                                                   isLocked={isLockedForUser} 
+                                                   onSave={(newVal) => saveCellData(selectedStudentNIS, colName, val, newVal)} 
+                                                />
+                                             </td>
+                                           )
+                                        })}
+                                        <td className="px-4 py-3 text-center font-black text-emerald-600 dark:text-emerald-400 bg-emerald-50/30 dark:bg-emerald-900/10 text-base">
+                                           {studentData[rerataColName] || '-'}
+                                        </td>
+                                      </tr>
+                                    )
+                                  })}
+                                </tbody>
+                              </table>
+                           )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB: TABEL MASTER (WALI KELAS & ADMIN) */}
+                {tab === 'editor' && auth.role !== 'Siswa' && (
+                  <div className='p-4 sm:p-6 flex flex-col h-full flex-1 overflow-auto'>
+                    <div className='flex flex-col lg:flex-row justify-between items-start lg:items-center mb-4 sm:mb-5 gap-4 shrink-0'>
+                      <div className="w-full lg:w-auto">
+                        <h2 className='text-lg sm:text-xl lg:text-2xl font-extrabold text-slate-800 dark:text-white'>Tabel Master & Validasi Final</h2>
+                        <p className='text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3'>
+                           <span>Pantau seluruh Rerata Ijazah dan Validasi data siswa yang sudah diverifikasi (Lengkap).</span>
+                           <span className="inline-flex items-center text-blue-500 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded border border-blue-100 dark:border-blue-800"><i className="fas fa-user-edit text-[10px] mr-1.5"></i> Edit Mandiri Wali Kelas</span>
+                        </p>
+                      </div>
+                      
+                      <div className='flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto'>
+                        <div className="relative w-full sm:w-56 lg:w-64">
+                           <i className="fas fa-search absolute left-3.5 top-1/2 transform -translate-y-1/2 text-slate-400"></i>
+                           <input type="text" placeholder="Cari NIS / Nama..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-10 pr-4 py-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-medium transition-all"/>
+                        </div>
+                        <div className='flex items-center bg-slate-50 dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-700 w-full sm:w-auto shrink-0'>
+                          <div className="bg-white dark:bg-slate-800 p-1.5 px-3 rounded-lg text-slate-400 hidden sm:block shadow-sm"><i className='fas fa-filter'></i></div>
+                          <select className='bg-transparent font-bold px-3 py-1.5 w-full sm:w-40 focus:outline-none text-slate-800 dark:text-slate-200 text-sm sm:text-base' value={selectedRombel} onChange={e => setSelectedRombel(e.target.value)} disabled={auth.role === 'Wali Kelas' && auth.rombelAkses !== 'Semua'}>{auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua">Semua Rombel</option> : null}{rombels.map(r => <option key={r} value={r} className="dark:bg-slate-800">Kelas {r}</option>)}</select>
+                        </div>
+                      </div>
+                    </div>
+
+                    {loading ? <div className="flex-1 flex items-center justify-center py-20"><i className="fas fa-circle-notch fa-spin text-4xl text-blue-500"></i></div> : (
+                      <div className='flex-1 flex flex-col min-h-0 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm bg-white dark:bg-slate-800 relative'>
+                        <div className='flex-1 overflow-auto table-container relative'>
+                           <table className='w-full whitespace-nowrap text-sm text-left border-collapse'>
+                             <thead className='text-xs text-slate-500 dark:text-slate-400 uppercase sticky top-0 z-40 font-extrabold shadow-sm'>
+                               <tr>
+                                 {headers.map(h => {
+                                   let baseClass = 'px-4 py-3 sm:py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-900';
+                                   if (h === 'NIS') return <th key={h} className={baseClass + ' md:sticky md:left-0 z-50 border-r w-[80px] min-w-[80px] shadow-[1px_0_0_0_#e2e8f0] dark:shadow-[1px_0_0_0_#334155]'}>{h}</th>;
+                                   if (h === 'NISN') return <th key={h} className={baseClass + ' md:sticky md:left-[80px] z-50 border-r w-[100px] min-w-[100px] shadow-[1px_0_0_0_#e2e8f0] dark:shadow-[1px_0_0_0_#334155]'}>{h}</th>;
+                                   if (h === 'Nama Lengkap') return <th key={h} className={baseClass + ' md:sticky md:left-[180px] z-50 border-r w-[200px] min-w-[200px] shadow-[1px_0_0_0_#e2e8f0] dark:shadow-[1px_0_0_0_#334155]'}>{h}</th>;
+                                   return <th key={h} className={baseClass + (h.includes('Verifikasi') || h.includes('Status') ? ' text-center' : '')}>{formatHeaderDisplay(h, false)}</th>;
+                                 })}
+                                 {auth.role === 'Admin' && <th className="px-4 py-3 sm:py-4 border-b border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-900 text-center text-red-500">Aksi</th>}
+                               </tr>
+                             </thead>
+                             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
+                               {currentData.length === 0 ? <tr><td colSpan={headers.length + (auth.role === 'Admin' ? 1 : 0)} className="text-center py-12 text-slate-400 bg-white dark:bg-slate-800">Tidak ada data ditemukan.</td></tr> : null}
+                               {currentData.map((row) => {
+                                 const needsWaliAction = auth.role === 'Wali Kelas' && row['Verifikasi Siswa'] === 'Selesai' && row['Status Data'] === 'Lengkap' && row['Verifikasi Wali'] !== 'Selesai';
+                                 const rowBgClass = needsWaliAction ? "bg-emerald-50/50 dark:bg-emerald-900/10" : "bg-white dark:bg-slate-800";
+                                 
+                                 return (
+                                 <tr key={row.NIS} className={rowBgClass + " hover:bg-slate-50 dark:hover:bg-slate-700/50 group transition-colors " + (needsWaliAction ? 'border-l-4 border-emerald-400 dark:border-emerald-600' : '')}>
+                                   {headers.map(h => {
+                                     const isEditable = h.startsWith('Sem');
+                                     const isRerataMapel = h.startsWith('Rerata_') && !h.includes('Akhir');
+                                     const isLockedForUser = lockStatus[row.Rombel] || row['Verifikasi Wali'] === 'Selesai';
+                                     const pendingDraft = drafts.find(d => String(d.NIS) === String(row.NIS) && d['Kolom Mapel'] === h && d.Status === 'Pending');
+                                     const isPending = !!pendingDraft;
+                                     const pendingValue = isPending ? pendingDraft['Nilai Baru'] : '';
+                                     
+                                     let baseClass = 'px-4 py-2 sm:py-2.5 border-r border-slate-100 dark:border-slate-700/50';
+                                     
+                                     if (h === 'NIS') return <td key={h} className={baseClass + " md:sticky md:left-0 z-30 " + rowBgClass + " group-hover:bg-slate-50 dark:group-hover:bg-slate-700/50 font-mono text-slate-500 shadow-[1px_0_0_0_#f1f5f9] dark:shadow-[1px_0_0_0_#334155]"}>{row[h]}</td>;
+                                     if (h === 'NISN') return <td key={h} className={baseClass + " md:sticky md:left-[80px] z-30 " + rowBgClass + " group-hover:bg-slate-50 dark:group-hover:bg-slate-700/50 font-mono text-slate-500 shadow-[1px_0_0_0_#f1f5f9] dark:shadow-[1px_0_0_0_#334155]"}>{row[h]}</td>;
+                                     if (h === 'Nama Lengkap') return <td key={h} className={baseClass + " md:sticky md:left-[180px] z-30 " + rowBgClass + " group-hover:bg-slate-50 dark:group-hover:bg-slate-700/50 font-bold text-slate-800 dark:text-white shadow-[1px_0_0_0_#f1f5f9] dark:shadow-[1px_0_0_0_#334155] truncate max-w-[200px]"} title={row[h]}>{row[h]}</td>;
+                                     
+                                     if (isRerataMapel) return <td key={h} className={baseClass + ' font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50/40 dark:bg-emerald-900/10 text-center'}>{row[h]}</td>;
+                                     if (h === 'Rerata Akhir SKL') return <td key={h} className={baseClass + ' font-black text-amber-600 dark:text-amber-400 bg-amber-50/60 dark:bg-amber-900/20 text-center text-sm sm:text-base'}>{row[h]}</td>;
+                                     if (h === 'Rerata Akhir Ijazah') return <td key={h} className={baseClass + ' font-black text-blue-700 dark:text-blue-400 bg-blue-50/60 dark:bg-blue-900/10 text-center text-sm sm:text-base'}>{row[h]}</td>;
+                                     
+                                     if (h === 'Status Data') return <td key={h} className={baseClass + ' text-center font-bold text-xs ' + (row[h] === 'Lengkap' ? 'text-blue-600' : 'text-red-500')}>{row[h]}</td>;
+                                     if (h === 'Verifikasi Siswa') return <td key={h} className={baseClass + ' text-center'}><span className={'px-2.5 py-1 rounded-md text-[11px] font-bold ' + (row[h]==='Selesai' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>{row[h]==='Selesai'?'Disetujui':'Belum'}</span></td>;
+                                     if (h === 'Verifikasi Wali') {
+                                        const vWali = row[h] === 'Selesai';
+                                        const isReady = row['Verifikasi Siswa'] === 'Selesai' && row['Status Data'] === 'Lengkap';
+                                        return <td key={h} className={baseClass + ' text-center'}>
+                                           {vWali ? <span className="px-3 py-1 rounded-md text-xs font-bold bg-blue-100 text-blue-700"><i className="fas fa-check-double mr-1"></i> Final</span> 
+                                           : ( isReady ? <button onClick={() => { if(confirm('Validasi data '+row.NIS+'? Data akan terkunci permanen untuk siswa.')) handleVerification(row.NIS, 'VERIF_WALI') }} className="bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-1 rounded-md text-xs font-bold shadow-sm transition-colors animate-pulse hover:animate-none">Validasi</button>
+                                           : <span className="text-xs font-semibold text-slate-400">-</span> )}
+                                        </td>;
+                                     }
+
+                                     return <td key={h} className={baseClass}>{isEditable ? <EditableCell value={row[h]} isPending={isPending} pendingValue={pendingValue} isEditedByWali={waliEdits.includes(row.NIS + '_' + h)} loadingStatus={cellLoading[row.NIS + '_' + h]} isLocked={isLockedForUser} onSave={(newVal) => saveCellData(row.NIS, h, row[h], newVal)} /> : <span className="text-slate-600 dark:text-slate-300">{row[h] || '-'}</span>}</td>
+                                   })}
+                                   {auth.role === 'Admin' && (
+                                     <td className="px-4 py-2 border-r border-slate-100 dark:border-slate-700 text-center">
+                                       <button onClick={() => { if(confirm('Reset seluruh status persetujuan untuk siswa ini?')) handleVerification(row.NIS, 'RESET_ADMIN') }} title="Reset Persetujuan" className="w-8 h-8 rounded-full bg-red-50 hover:bg-red-100 text-red-500 hover:text-red-700 transition-colors focus:outline-none">
+                                         <i className="fas fa-undo"></i>
+                                       </button>
+                                     </td>
+                                   )}
+                                 </tr>
+                               )})}
+                             </tbody>
+                           </table>
+                        </div>
+                        {renderPaginationUI()}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB: MANAJEMEN MAPEL (ADMIN ONLY) */}
+                {tab === 'mapel' && auth.role === 'Admin' && (
+                  <div className='p-5 sm:p-8 max-w-5xl mx-auto w-full flex-1 overflow-y-auto'>
+                    <div className="mb-6 lg:mb-8 border-b border-slate-100 dark:border-slate-700 pb-4 lg:pb-6">
+                      <h2 className='text-xl sm:text-2xl font-extrabold text-slate-800 dark:text-white mb-2'>Manajemen Mata Pelajaran</h2>
+                      <p className='text-sm text-slate-500 dark:text-slate-400 font-medium leading-relaxed'>Atur Mapel Wajib (Masuk Ijazah). Centang <b>Toleransi Kosong</b> jika mapel tersebut boleh tidak diisi (misal: kurikulum berbeda/siswa pindahan).</p>
+                    </div>
+                    
+                    <div className='mb-6 p-5 sm:p-6 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4'>
+                       <div>
+                         <p className="text-sm font-bold text-indigo-800 dark:text-indigo-300">1. Pindai Data Sumber</p>
+                         <p className="text-xs text-indigo-600 dark:text-indigo-400 mt-1">Sistem membaca File Semester dan mendeteksi Mapel otomatis.</p>
+                       </div>
+                       <button onClick={handleScanMapel} disabled={loading} className="w-full sm:w-auto whitespace-nowrap bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 sm:py-3 px-5 sm:px-6 rounded-xl shadow-sm transition-colors focus:outline-none"><i className="fas fa-search mr-2"></i> Pindai Mapel</button>
+                    </div>
+
+                    {mapelConfig.length > 0 ? (
+                      <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-x-auto mb-6 shadow-sm">
+                        <table className="w-full text-sm text-left whitespace-nowrap">
+                          <thead className="text-xs uppercase bg-slate-100 dark:bg-slate-900 text-slate-500 dark:text-slate-400">
+                            <tr>
+                               <th className="px-5 py-4 border-r border-slate-200 dark:border-slate-700">Kode Asli (Spreadsheet)</th>
+                               <th className="px-5 py-4 border-r border-slate-200 dark:border-slate-700">Nama Tampil di Web (Alias)</th>
+                               <th className="px-5 py-4 text-center border-r border-slate-200 dark:border-slate-700" title="Masuk perhitungan Rata-Rata SKL">Masuk Rerata SKL</th>
+                               <th className="px-5 py-4 text-center border-r border-slate-200 dark:border-slate-700" title="Menjadi syarat kelengkapan data">Masuk Ijazah (Wajib)</th>
+                               <th className="px-5 py-4 text-center" title="Abaikan nilai kosong pada perhitungan status Lengkap">Toleransi Kosong</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                            {mapelConfig.map((m, idx) => (
+                              <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 bg-white dark:bg-slate-800 transition-colors">
+                                <td className="px-5 py-3 font-mono text-slate-600 dark:text-slate-300 border-r border-slate-100 dark:border-slate-700/50">{m.subject}</td>
+                                <td className="px-4 py-2 border-r border-slate-100 dark:border-slate-700/50">
+                                   <input type="text" value={m.alias || ''} onChange={(e) => handleMapelChange(idx, 'alias', e.target.value)} placeholder="Contoh: Pend. Agama" className="min-w-[180px] w-full sm:w-64 px-3 py-2 border border-slate-200 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-bold transition-all text-slate-800 dark:text-slate-100" />
+                                </td>
+                                <td className="px-5 py-3 text-center border-r border-slate-100 dark:border-slate-700/50"><input type="checkbox" checked={m.isSKL} onChange={() => handleMapelChange(idx, 'isSKL', null)} className="w-5 h-5 cursor-pointer checkbox-custom rounded accent-indigo-600" /></td>
+                                <td className="px-5 py-3 text-center border-r border-slate-100 dark:border-slate-700/50"><input type="checkbox" checked={m.isIjazah} onChange={() => handleMapelChange(idx, 'isIjazah', null)} className="w-5 h-5 cursor-pointer checkbox-custom rounded accent-indigo-600" /></td>
+                                <td className="px-5 py-3 text-center"><input type="checkbox" checked={m.isToleransi} onChange={() => handleMapelChange(idx, 'isToleransi', null)} disabled={!m.isIjazah} title={!m.isIjazah ? "Hanya berlaku untuk Mapel Wajib" : "Pilih agar nilai kosong diabaikan"} className="w-5 h-5 cursor-pointer checkbox-custom rounded accent-purple-600 disabled:opacity-30 disabled:cursor-not-allowed" /></td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="text-center py-12 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-dashed border-slate-300 dark:border-slate-600 mb-6"><i className="fas fa-clipboard-list text-4xl text-slate-300 dark:text-slate-600 mb-4"></i><p className="text-slate-500 font-medium">Belum ada daftar Mata Pelajaran.<br/>Silakan klik tombol Pindai di atas.</p></div>
+                    )}
+                    <div className='flex justify-end'><button onClick={handleSaveMapel} disabled={loading || mapelConfig.length===0} className='w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-8 rounded-xl shadow-sm transition-colors focus:outline-none disabled:opacity-50'><i className="fas fa-save mr-2"></i> 2. Simpan Pengaturan Mapel</button></div>
+                  </div>
+                )}
+
+                {tab === 'sync' && auth.role === 'Admin' && (
+                  <div className='p-5 sm:p-8 max-w-4xl mx-auto w-full flex-1 flex flex-col justify-center overflow-y-auto'>
+                    <div className="text-center mb-8 sm:mb-10"><div className="inline-flex bg-purple-100 dark:bg-purple-900/30 p-4 rounded-full mb-4"><i className="fas fa-sync text-4xl text-purple-600 dark:text-purple-400"></i></div><h2 className="text-2xl font-extrabold text-slate-800 dark:text-white">Pusat Sinkronisasi</h2><p className="text-slate-500 mt-2">Pusat integrasi data nilai dari berbagai semester.</p></div>
+                    <div className='mb-8 p-5 sm:p-6 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-sm'><label className='block text-sm font-bold mb-4 text-slate-700 dark:text-slate-300'>Opsi Dokumen Ijazah (Target Rerata)</label><div className='flex flex-col sm:flex-row gap-4 sm:gap-8'><label className='flex items-center cursor-pointer text-slate-700 dark:text-slate-200 font-medium'><input type='radio' value='5' checked={calcMode === 5} onChange={() => setCalcMode(5)} className="w-4 h-4 mr-2.5 accent-blue-600"/> Rerata Sem 1 - 5</label><label className='flex items-center cursor-pointer text-slate-700 dark:text-slate-200 font-medium'><input type='radio' value='6' checked={calcMode === 6} onChange={() => setCalcMode(6)} className="w-4 h-4 mr-2.5 accent-blue-600"/> Rerata Sem 1 - 6</label></div></div>
+                    <div className='flex flex-col sm:flex-row gap-4'>
+                      <button onClick={() => { setLoading(true); callApi('setupDatabase', { username: loginUser, password: loginPass }).then(r => {setLoading(false); alert(r.message);}); }} className='flex-1 bg-slate-800 hover:bg-slate-700 dark:bg-slate-700 dark:hover:bg-slate-600 text-white font-bold py-3.5 sm:py-4 rounded-xl transition-colors shadow-sm focus:outline-none'><i className="fas fa-cogs mr-2"></i> Setup Master Sheet</button>
+                      <button onClick={handleSync} className='flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold py-3.5 sm:py-4 rounded-xl transition-colors shadow-sm focus:outline-none'><i className="fas fa-cloud-download-alt mr-2"></i> Sinkronisasi Data Siswa</button>
+                    </div>
+                  </div>
+                )}
+
+                {tab === 'access' && auth.role === 'Admin' && (
+                  <div className='p-5 sm:p-8 w-full flex-1 overflow-y-auto'><div className="mb-6 lg:mb-8 border-b border-slate-100 dark:border-slate-700 pb-4 lg:pb-6"><h2 className='text-xl sm:text-2xl font-extrabold text-slate-800 dark:text-white mb-2'>Dashboard Keamanan Rombel</h2><p className='text-sm text-slate-500 dark:text-slate-400 font-medium'>Kunci Rombel untuk mencegah Wali Kelas melakukan perubahan pada nilai yang sudah divalidasi dan final.</p></div><div className='grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6'>{rombels.length === 0 ? <div className="col-span-full text-center py-10 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-dashed border-slate-300 dark:border-slate-600 text-slate-500 italic">Belum ada data rombel. Lakukan sinkronisasi terlebih dahulu.</div> : null}{rombels.map(r => { const isLocked = lockStatus[r]; return ( <div key={r} className={"p-5 sm:p-6 border rounded-2xl text-center shadow-sm transition-all " + (isLocked ? "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800/50" : "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700")}><div className={"text-3xl font-black mb-5 " + (isLocked ? "text-red-600 dark:text-red-400" : "text-slate-800 dark:text-slate-100")}>{r}</div><button onClick={() => handleToggleLock(r, isLocked)} className={"w-full py-2.5 sm:py-3 rounded-xl text-white font-bold text-sm sm:text-base transition-colors shadow-sm focus:outline-none " + (isLocked ? "bg-red-500 hover:bg-red-600" : "bg-emerald-500 hover:bg-emerald-600")}><i className={"fas mr-2 " + (isLocked ? "fa-lock" : "fa-unlock")}></i> {isLocked ? "Terkunci" : "Terbuka"}</button></div> )})}</div></div>
+                )}
+
+                {/* TAB: DATA INCOMPLETE (PENGGABUNGAN & REDESAIN) */}
+                {tab === 'incomplete' && auth.role !== 'Siswa' && (
+                   <div className='p-5 sm:p-8 flex flex-col h-full flex-1 min-h-0 bg-white dark:bg-slate-800 overflow-auto'>
+                     <div className='flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4 shrink-0'>
+                        <div>
+                           <h2 className='text-xl sm:text-2xl font-black text-slate-800 dark:text-white flex items-center'>
+                               <div className="bg-rose-100 dark:bg-rose-900/30 p-2.5 rounded-xl mr-3 shadow-sm border border-rose-200 dark:border-rose-800"><i className="fas fa-exclamation-triangle text-rose-600 dark:text-rose-400"></i></div>
+                               Data Tidak Lengkap
+                           </h2>
+                           <p className="text-sm text-slate-500 mt-2 font-medium">Daftar siswa dengan nilai Mapel Wajib (Ijazah) yang masih kosong.</p>
+                        </div>
+                        <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
+                           <div className='flex items-center bg-slate-50 dark:bg-slate-900 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm'>
+                             <i className="fas fa-filter text-slate-400 ml-2 mr-1"></i>
+                             <select className='bg-transparent font-bold px-2 py-1 focus:outline-none text-sm text-slate-800 dark:text-slate-200 cursor-pointer min-w-[140px]' value={selectedRombel} onChange={e => setSelectedRombel(e.target.value)} disabled={auth.role === 'Wali Kelas' && auth.rombelAkses !== 'Semua'}>
+                               {auth.role === 'Admin' || auth.rombelAkses === 'Semua' ? <option value="Semua">Semua Rombel</option> : null}
+                               {rombels.map(r => <option key={r} value={r}>Kelas {r}</option>)}
+                             </select>
+                           </div>
+                           <div className="relative w-full sm:w-64">
+                              <i className="fas fa-search absolute left-4 top-1/2 transform -translate-y-1/2 text-slate-400"></i>
+                              <input type="text" placeholder="Cari NIS / Nama Siswa..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-11 pr-4 py-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500 transition-all font-bold text-slate-700 dark:text-slate-200 shadow-sm"/>
+                           </div>
+                        </div>
+                     </div>
+                     
+                     <div className='flex-1 overflow-auto border border-rose-200 dark:border-rose-900/40 rounded-2xl shadow-sm relative bg-slate-50/30 dark:bg-slate-900/10 table-container'>
+                        <table className='w-full whitespace-nowrap text-sm text-left border-collapse'>
+                           <thead className='text-xs uppercase bg-rose-50 dark:bg-rose-900/40 text-rose-800 dark:text-rose-300 sticky top-0 z-10 font-extrabold tracking-wider shadow-sm'>
+                              <tr>
+                                 <th className="px-6 py-4 border-b border-rose-100 dark:border-rose-900/50">Siswa & Rombel</th>
+                                 <th className="px-6 py-4 border-b border-rose-100 dark:border-rose-900/50">Identitas</th>
+                                 <th className="px-6 py-4 border-b border-rose-100 dark:border-rose-900/50">Rincian Kekurangan Data</th>
+                                 <th className="px-6 py-4 border-b border-rose-100 dark:border-rose-900/50 text-center">Aksi</th>
+                              </tr>
+                           </thead>
+                           <tbody className="divide-y divide-rose-100 dark:divide-rose-900/30">
+                              {filteredIncData.length === 0 ? (
+                                 <tr><td colSpan="4" className="text-center py-24 bg-white dark:bg-slate-800"><div className="flex flex-col items-center"><div className="w-20 h-20 bg-emerald-100 dark:bg-emerald-900/30 rounded-full flex items-center justify-center mb-4 shadow-inner"><i className="fas fa-shield-check text-4xl text-emerald-500"></i></div><span className="font-extrabold text-xl text-slate-700 dark:text-slate-200">Semua Data Sudah Lengkap!</span><span className="text-slate-500 text-sm mt-2 font-medium">Tidak ada siswa dengan nilai mapel wajib yang kosong.</span></div></td></tr>
+                              ) : filteredIncData.map(row => (
+                                 <tr key={row.NIS} className="bg-white dark:bg-slate-800 hover:bg-rose-50/60 dark:hover:bg-rose-900/10 transition-colors group">
+                                    <td className="px-6 py-5">
+                                       <div className="font-extrabold text-slate-800 dark:text-slate-100 text-base group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors">{row['Nama Lengkap']}</div>
+                                       <div className="text-[11px] font-black text-slate-500 dark:text-slate-400 mt-1.5 bg-slate-100 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-700 inline-block px-2.5 py-0.5 rounded-full uppercase tracking-wide">Kelas {row.Rombel}</div>
+                                    </td>
+                                    <td className="px-6 py-5 font-mono text-slate-600 dark:text-slate-300 text-[13px]">
+                                       <div className="flex items-center"><span className="w-10 text-[10px] text-slate-400 font-sans font-bold uppercase">NIS</span>: <span className="font-bold text-slate-700 dark:text-slate-200 ml-1">{row.NIS}</span></div>
+                                       <div className="flex items-center mt-1"><span className="w-10 text-[10px] text-slate-400 font-sans font-bold uppercase">NISN</span>: <span className="font-bold text-slate-700 dark:text-slate-200 ml-1">{row.NISN}</span></div>
+                                    </td>
+                                    <td className="px-6 py-5">
+                                       <div className="inline-flex items-start gap-2.5 bg-rose-50 dark:bg-rose-900/20 px-3.5 py-2.5 rounded-xl border border-rose-100 dark:border-rose-800/50 max-w-md whitespace-normal shadow-sm">
+                                          <i className="fas fa-info-circle text-rose-500 mt-0.5"></i>
+                                          <span className="text-rose-700 dark:text-rose-300 font-bold leading-relaxed text-xs">{row['Keterangan Data Kurang']}</span>
+                                       </div>
+                                    </td>
+                                    <td className="px-6 py-5 text-center">
+                                        <button onClick={() => { setTab('semester'); setSelectedRombel(row.Rombel); setSelectedStudentNIS(row.NIS); }} className="bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 dark:hover:bg-blue-900/30 dark:hover:text-blue-400 dark:hover:border-blue-800 text-slate-600 dark:text-slate-300 px-4 py-2 rounded-xl text-xs font-bold shadow-sm transition-all focus:outline-none">
+                                           <i className="fas fa-edit mr-1.5"></i> Lengkapi
+                                        </button>
+                                    </td>
+                                 </tr>
+                              ))}
+                           </tbody>
+                        </table>
+                     </div>
+                  </div>
+                )}
+
+              </div>
+            </main>
+          </div>
+        </div>
+      );
+    }
+    ReactDOM.render(<App />, document.getElementById('app'));
+  </script>
+</body>
+</html>
