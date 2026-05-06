@@ -13,7 +13,6 @@
   <script src='https://cdn.tailwindcss.com'></script>
   <link href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css' rel='stylesheet'>
   <script>
-    // Konfigurasi Aplikasi (Dulu dari GAS, sekarang statis di frontend)
     window.APP_CONFIG = { 
         appName: 'SERASI', 
         schoolName: 'Sistem Rekap Nilai', 
@@ -45,13 +44,15 @@
     // ========================================================================
     // KONFIGURASI API (WAJIB DIISI)
     // ========================================================================
-    const GAS_API_URL = "https://script.google.com/macros/s/AKfycbwfFcVRAU0bhdNOQqpLmH8xHLlcx9oYpgPdtqNloM_Y1oV2DTfAPEhftcmC2MHrS0oLAA/exec";
+    // Ganti nilai di bawah ini dengan URL Web App dari Google Apps Script Anda
+    const GAS_API_URL = "MASUKKAN_URL_WEB_APP_GAS_ANDA_DISINI";
 
     // Fungsi Fetch API Pengganti google.script.run
     const callApi = async (action, data = {}) => {
         try {
             const response = await fetch(GAS_API_URL, {
                 method: 'POST',
+                // Trik Bypass Preflight CORS (Jangan diganti)
                 headers: { 'Content-Type': 'text/plain;charset=utf-8' },
                 body: JSON.stringify({ action, data }),
                 redirect: 'follow'
@@ -178,12 +179,22 @@
         else { document.documentElement.classList.add('dark'); localStorage.setItem('serasi_theme', 'dark'); setIsDark(true); }
       };
 
-      useEffect(() => { if (loginUser && loginPass) fetchDashboardData(loginUser, loginPass, false); else setLoading(false); }, []);
+      useEffect(() => { 
+        if (loginUser && loginPass) fetchDashboardData(loginUser, loginPass, false); 
+        else setLoading(false); 
+      }, []);
 
       const handleLogin = (e) => { 
          e.preventDefault(); 
          if (!loginUser.trim() || !loginPass.trim()) return; 
          setLoading(true); setMessage(null); 
+         
+         if (GAS_API_URL.includes('MASUKKAN_URL_WEB_APP')) {
+            setLoading(false);
+            setMessage({ type: 'error', text: 'Error: Konfigurasi API Belum Diatur. Anda harus memasukkan GAS_API_URL terlebih dahulu di dalam kode index.html' });
+            return;
+         }
+
          fetchDashboardData(loginUser.trim(), loginPass.trim(), true); 
       };
 
